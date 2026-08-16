@@ -57,7 +57,11 @@ java -jar obelisk-cli/target/obelisk.jar rename-method \
 | `--class`       | yes      | Simple name of the class/interface/enum/record declaring the method |
 | `--from`        | yes      | Current method name                                       |
 | `--to`          | yes      | New method name                                            |
+| `--params`      | no*      | Comma-separated parameter type names (simple or fully-qualified), e.g. `String,int`. Use `""` for a zero-arg overload. *Required if `--from` is overloaded on the target class. |
 | `--dry-run`      | no       | Print the unified diff without writing any files           |
+
+If `--from` is overloaded and `--params` is omitted, obelisk refuses and
+lists the available overloads' signatures so you can pick one.
 
 Drop `--dry-run` to apply the changes to disk. obelisk prints a unified diff
 per changed file either way, plus any warnings for call sites it couldn't
@@ -87,8 +91,8 @@ resolve (and therefore left untouched).
   `Config` class next to a top-level `Config` class — do *not* trigger this;
   top-level matches win.)
 - **Overloaded methods**: if the method name is overloaded on the target
-  class, obelisk refuses to guess which overload you meant. There is no
-  parameter-list disambiguation yet.
+  class and `--params` isn't given (or doesn't uniquely match one overload),
+  obelisk refuses to guess which overload you meant.
 - **Invalid or colliding `--to`**: rejects non-identifiers/keywords, a name
   that would duplicate an existing method signature on the same class, and
   renaming an unqualified call into a name its enclosing class already

@@ -59,11 +59,11 @@ public final class RenameMethodRefactor {
     }
 
     public static RefactorResult run(ProjectContext ctx, String className, String oldName, String newName,
-                                      boolean apply) {
+                                      String paramsFilter, boolean apply) {
         validateIdentifier(newName);
 
         TypeDeclaration<?> targetClass = findClass(ctx, className);
-        MethodDeclaration targetMethod = findMethod(targetClass, oldName);
+        MethodDeclaration targetMethod = findMethod(targetClass, oldName, paramsFilter);
         ResolvedMethodDeclaration resolvedTarget = resolveTarget(targetMethod, targetClass, oldName);
         String targetSignature = signatureOf(resolvedTarget);
         String ownerQualifiedName = resolvedTarget.declaringType().getQualifiedName();
@@ -533,7 +533,15 @@ public final class RenameMethodRefactor {
         return type.getParentNode().filter(p -> p instanceof CompilationUnit).isPresent();
     }
 
-    private static MethodDeclaration findMethod(TypeDeclaration<?> targetClass, String methodName) {
+    /**
+     * Finds the method to rename, disambiguating overloads via
+     * {@code paramsFilter} (the CLI's {@code --params}, e.g. {@code "String,int"})
+     * when more than one method on the class shares {@code methodName}.
+     * {@code paramsFilter == null} means the caller didn't supply one, which
+     * is only acceptable when there's exactly one method with that name.
+     */
+    private static MethodDeclaration findMethod(TypeDeclaration<?> targetClass, String methodName,
+                                                  String paramsFilter) {
         List<MethodDeclaration> matches = targetClass.getMethods().stream()
                 .filter(m -> m.getNameAsString().equals(methodName))
                 .toList();
@@ -541,12 +549,76 @@ public final class RenameMethodRefactor {
             throw new RefactorException(
                     "No method named '" + methodName + "' declared directly on '" + targetClass.getNameAsString() + "'");
         }
-        if (matches.size() > 1) {
-            throw new RefactorException("Method name '" + methodName + "' is overloaded ("
-                    + matches.size() + " overloads) on '" + targetClass.getNameAsString()
-                    + "'. Disambiguating by parameter list is not yet supported -- refusing to guess.");
+        if (matches.size() == 1) {
+            return matches.get(0);
         }
-        return matches.get(0);
+        if (paramsFilter == null) {
+            throw new RefactorException("Method name '" + methodName + "' is overloaded (" + matches.size()
+                    + " overloads) on '" + targetClass.getNameAsString() + "'. Disambiguate with --params, "
+                    + "e.g.: " + describeOverloads(matches, methodName) + ".");
+        }
+
+        List<String> wanted = parseParamsFilter(paramsFilter);
+        List<MethodDeclaration> filtered = new ArrayList<>();
+        for (MethodDeclaration candidate : matches) {
+            try {
+                if (paramsFilterMatches(candidate.resolve().formalParameterTypes(), wanted)) {
+                    filtered.add(candidate);
+                }
+            } catch (RuntimeException e) {
+                // unresolvable overload can't be matched by --params; skip it
+            }
+        }
+        if (filtered.isEmpty()) {
+            throw new RefactorException("No overload of '" + methodName + "' on '" + targetClass.getNameAsString()
+                    + "' matches --params '" + paramsFilter + "'. Available overloads: "
+                    + describeOverloads(matches, methodName) + ".");
+        }
+        if (filtered.size() > 1) {
+            throw new RefactorException("--params '" + paramsFilter + "' matches more than one overload of '"
+                    + methodName + "' on '" + targetClass.getNameAsString() + "': "
+                    + describeOverloads(filtered, methodName) + ". Use fully-qualified type names to disambiguate.");
+        }
+        return filtered.get(0);
+    }
+
+    private static List<String> parseParamsFilter(String paramsFilter) {
+        if (paramsFilter.isBlank()) {
+            return List.of();
+        }
+        List<String> tokens = new ArrayList<>();
+        for (String token : paramsFilter.split(",")) {
+            tokens.add(token.trim());
+        }
+        return tokens;
+    }
+
+    /** Matches each wanted token against a parameter's simple OR fully-qualified type name. */
+    private static boolean paramsFilterMatches(List<ResolvedType> candidateParams, List<String> wanted) {
+        if (candidateParams.size() != wanted.size()) {
+            return false;
+        }
+        for (int i = 0; i < wanted.size(); i++) {
+            String describe = candidateParams.get(i).describe();
+            String simple = describe.substring(describe.lastIndexOf('.') + 1);
+            if (!wanted.get(i).equals(describe) && !wanted.get(i).equals(simple)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String describeOverloads(List<MethodDeclaration> methods, String methodName) {
+        List<String> descriptions = new ArrayList<>();
+        for (MethodDeclaration m : methods) {
+            try {
+                String sig = signatureOf(m.resolve());
+                descriptions.add(methodName + sig.substring(sig.indexOf('(')));
+            } catch (RuntimeException e) {
+                descriptions.add(methodName + "(<unresolvable>)");
+            }
+        }
+        return String.join(", ", descriptions);
     }
 
     private static ResolvedMethodDeclaration resolveTarget(MethodDeclaration method, TypeDeclaration<?> owner,

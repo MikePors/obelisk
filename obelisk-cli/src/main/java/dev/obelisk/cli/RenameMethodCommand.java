@@ -28,10 +28,15 @@ public class RenameMethodCommand implements Callable<Integer> {
     @Option(names = "--dry-run", description = "Show the diff without writing changes to disk")
     private boolean dryRun;
 
+    @Option(names = "--params", description = "Comma-separated parameter type names (simple or fully-qualified) "
+            + "to disambiguate an overloaded method, e.g. 'String,int'. Use an empty string for a zero-arg "
+            + "overload. Only needed if --from is overloaded on the target class.")
+    private String params;
+
     @Override
     public Integer call() {
         try (ProjectContext ctx = ProjectContext.load(projectDir.toAbsolutePath().normalize())) {
-            RefactorResult result = RenameMethodRefactor.run(ctx, className, from, to, !dryRun);
+            RefactorResult result = RenameMethodRefactor.run(ctx, className, from, to, params, !dryRun);
 
             for (Path file : result.diffs().keySet().stream().sorted().toList()) {
                 System.out.println(result.diffs().get(file));

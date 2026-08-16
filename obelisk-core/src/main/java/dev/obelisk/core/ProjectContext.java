@@ -5,6 +5,7 @@ import com.github.javaparser.ParseResult;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
+import com.github.javaparser.resolution.TypeSolver;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.javaparsermodel.JavaParserFacade;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ClassLoaderTypeSolver;
@@ -45,13 +46,15 @@ public final class ProjectContext implements AutoCloseable {
     private final List<Path> sourceRoots;
     private final Map<Path, CompilationUnit> unitsByFile;
     private final List<URLClassLoader> classLoaders;
+    private final TypeSolver typeSolver;
 
     private ProjectContext(Path projectDir, List<Path> sourceRoots, Map<Path, CompilationUnit> unitsByFile,
-                            List<URLClassLoader> classLoaders) {
+                            List<URLClassLoader> classLoaders, TypeSolver typeSolver) {
         this.projectDir = projectDir;
         this.sourceRoots = sourceRoots;
         this.unitsByFile = unitsByFile;
         this.classLoaders = classLoaders;
+        this.typeSolver = typeSolver;
     }
 
     public static ProjectContext load(Path projectDir) {
@@ -62,6 +65,21 @@ public final class ProjectContext implements AutoCloseable {
         }
 
         List<URLClassLoader> classLoaders = new ArrayList<>();
+        try {
+            return doLoad(projectDir, sourceRoots, classLoaders);
+        } catch (RuntimeException e) {
+            for (URLClassLoader classLoader : classLoaders) {
+                try {
+                    classLoader.close();
+                } catch (IOException ignored) {
+                    // best-effort cleanup
+                }
+            }
+            throw e;
+        }
+    }
+
+    private static ProjectContext doLoad(Path projectDir, List<Path> sourceRoots, List<URLClassLoader> classLoaders) {
         CombinedTypeSolver typeSolver = new CombinedTypeSolver();
         // Built up front so it can be threaded into every JavaParserTypeSolver
         // below (see the note further down on why that matters): JavaSymbolSolver
@@ -142,7 +160,7 @@ public final class ProjectContext implements AutoCloseable {
             }
         }
 
-        return new ProjectContext(projectDir, sourceRoots, unitsByFile, classLoaders);
+        return new ProjectContext(projectDir, sourceRoots, unitsByFile, classLoaders, typeSolver);
     }
 
     @Override
@@ -184,5 +202,9 @@ public final class ProjectContext implements AutoCloseable {
 
     public Map<Path, CompilationUnit> unitsByFile() {
         return unitsByFile;
+    }
+
+    public TypeSolver typeSolver() {
+        return typeSolver;
     }
 }

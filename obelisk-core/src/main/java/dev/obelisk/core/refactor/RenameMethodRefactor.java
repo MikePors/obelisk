@@ -8,9 +8,12 @@ import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
 import com.github.javaparser.ast.expr.Name;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
+import com.github.javaparser.resolution.MethodUsage;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
+import com.github.javaparser.resolution.model.SymbolReference;
 import com.github.javaparser.resolution.types.ResolvedReferenceType;
+import com.github.javaparser.resolution.types.ResolvedType;
 import dev.obelisk.core.DiffUtil;
 import dev.obelisk.core.ProjectContext;
 import dev.obelisk.core.RefactorException;
@@ -26,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -34,8 +38,9 @@ import java.util.Set;
  * resolve back to that exact declaration.
  *
  * Also renames every overriding declaration found elsewhere in the project
- * (subclasses, implementing classes), plus their own call sites/references,
- * so the whole override family stays in sync -- see {@link #findOverrides}.
+ * (subclasses, implementing classes, anonymous classes, enum constant
+ * bodies), plus their own call sites/references, so the whole override
+ * family stays in sync -- see {@link #findOverrides}.
  *
  * V1 known limitations (fail loudly rather than guess):
  *  - the class must be uniquely identified by simple name across the project
@@ -44,9 +49,9 @@ import java.util.Set;
  *  - overloaded methods with the target name must be disambiguated by the
  *    caller (not yet supported) -- refuses to guess which overload
  *  - override propagation is downward only: {@code --class} must name the
- *    root declaration (the interface/superclass method). Renaming from a
- *    subclass's override does not walk back up to rename the interface
- *    method or sibling overrides in other subclasses.
+ *    root declaration. If the specified method itself overrides something
+ *    further up the hierarchy, obelisk refuses and names the root to target
+ *    instead, rather than silently renaming only part of the family.
  */
 public final class RenameMethodRefactor {
 
@@ -62,38 +67,40 @@ public final class RenameMethodRefactor {
         ResolvedMethodDeclaration resolvedTarget = resolveTarget(targetMethod, targetClass, oldName);
         String targetSignature = signatureOf(resolvedTarget);
         String ownerQualifiedName = resolvedTarget.declaringType().getQualifiedName();
-        String paramsSuffix = targetSignature.substring(targetSignature.indexOf('('));
+
+        rejectNonRootTarget(resolvedTarget, oldName, targetClass);
 
         List<String> warnings = new ArrayList<>();
 
         // Find every declaration elsewhere in the project that overrides this
         // one, so the whole family gets renamed together instead of leaving
         // subclasses out of sync with the interface/superclass they implement.
-        List<MethodDeclaration> overrides = findOverrides(ctx, ownerQualifiedName, oldName, paramsSuffix, warnings);
+        List<MethodDeclaration> overrides = findOverrides(ctx, ownerQualifiedName, oldName, targetMethod,
+                resolvedTarget, warnings);
         List<MethodDeclaration> familyDeclarations = new ArrayList<>();
         familyDeclarations.add(targetMethod);
         familyDeclarations.addAll(overrides);
 
         Set<String> familySignatures = new LinkedHashSet<>();
         familySignatures.add(targetSignature);
-        for (MethodDeclaration override : familyDeclarations.subList(1, familyDeclarations.size())) {
+        for (MethodDeclaration override : overrides) {
             familySignatures.add(signatureOf(override.resolve()));
         }
 
+        String paramsSuffix = targetSignature.substring(targetSignature.indexOf('('));
         for (MethodDeclaration member : familyDeclarations) {
             member.findAncestor(TypeDeclaration.class).ifPresent(owner ->
                     rejectDuplicateSignature(castTypeDeclaration(owner), newName, paramsSuffix, oldName));
         }
 
-        // Resolve every matching call site / method reference / static import
-        // against the ORIGINAL (unmodified) AST first, and defer every mutation
-        // (including method references) to a single batch applied afterward.
-        // Renaming anything up front would shadow resolution for other matches
-        // still referencing the old name (e.g. a self-call inside the same
-        // class), so nothing is mutated until this whole pass completes.
+        // Resolve every matching call site / method reference against the
+        // ORIGINAL (unmodified) AST first, and defer every mutation (including
+        // method references) to a single batch applied afterward. Renaming
+        // anything up front would shadow resolution for other matches still
+        // referencing the old name (e.g. a self-call inside the same class),
+        // so nothing is mutated until this whole pass completes.
         List<MethodCallExpr> callsToRename = new ArrayList<>();
         List<MethodReferenceExpr> refsToRename = new ArrayList<>();
-        Set<ImportDeclaration> staticImportsToRename = new LinkedHashSet<>();
 
         for (CompilationUnit cu : ctx.unitsByFile().values()) {
             for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
@@ -109,24 +116,14 @@ public final class RenameMethodRefactor {
                     // An unqualified call: Java's lookup order tries the
                     // enclosing class hierarchy (self-calls, inherited members)
                     // *before* single-static-imports. If the enclosing type
-                    // already declares its own method named newName, renaming
-                    // this call would silently get shadowed by that member
-                    // instead of reaching the intended target -- refuse rather
-                    // than produce code that quietly means something else.
-                    // (Confirmed failure mode: renaming a statically-imported
-                    // method into a name the importing class already declares.)
-                    rejectShadowingCollision(call, newName, oldName);
-
-                    // A bare, unqualified call resolving to a method not reached
-                    // via "this" must have come in through a single-static-import
-                    // of that exact member -- rename any matching static import
-                    // in this file too, however it's qualified (including via a
-                    // subclass name).
-                    for (ImportDeclaration imp : cu.getImports()) {
-                        if (imp.isStatic() && !imp.isAsterisk() && simpleNameOf(imp.getNameAsString()).equals(oldName)) {
-                            staticImportsToRename.add(imp);
-                        }
-                    }
+                    // already declares a method named newName with the SAME
+                    // parameter list this call needs, renaming would silently
+                    // get shadowed by that member instead of reaching the
+                    // intended target -- refuse rather than produce code that
+                    // quietly means something else. (A newName method with a
+                    // DIFFERENT parameter list is just a legal new overload and
+                    // is not refused.)
+                    rejectShadowingCollision(call, resolved, newName, oldName);
                 }
             }
 
@@ -145,6 +142,13 @@ public final class RenameMethodRefactor {
                 }
             }
         }
+
+        // Static imports are handled as their own pass, independent of which
+        // calls matched: a candidate is only renamed if its qualifier actually
+        // resolves to the root type or one of its subtypes (so an unrelated
+        // static import that merely shares the old simple name -- e.g. a
+        // different class's same-named method -- is never touched).
+        Set<ImportDeclaration> staticImportsToRename = findStaticImportsToRename(ctx, ownerQualifiedName, oldName);
 
         Map<Path, String> originalContents = new LinkedHashMap<>();
         for (MethodDeclaration member : familyDeclarations) {
@@ -213,9 +217,9 @@ public final class RenameMethodRefactor {
      * already declared directly on the same type with the same parameter
      * list -- that would produce two methods with identical signatures.
      */
-    private static void rejectDuplicateSignature(TypeDeclaration<?> targetClass, String newName,
+    private static void rejectDuplicateSignature(TypeDeclaration<?> owner, String newName,
                                                    String paramsSuffix, String oldName) {
-        for (MethodDeclaration candidate : targetClass.getMethods()) {
+        for (MethodDeclaration candidate : owner.getMethods()) {
             if (!candidate.getNameAsString().equals(newName)) {
                 continue;
             }
@@ -224,7 +228,7 @@ public final class RenameMethodRefactor {
                 String candidateSuffix = signatureOf(resolved).substring(signatureOf(resolved).indexOf('('));
                 if (candidateSuffix.equals(paramsSuffix)) {
                     throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
-                            + targetClass.getNameAsString() + "' already declares " + newName + paramsSuffix);
+                            + owner.getNameAsString() + "' already declares " + newName + paramsSuffix);
                 }
             } catch (RefactorException e) {
                 throw e;
@@ -237,93 +241,248 @@ public final class RenameMethodRefactor {
 
     /**
      * Refuses to rename an unqualified call if its enclosing type already
-     * declares a method named {@code newName} -- Java resolves an unqualified
-     * call against the enclosing class hierarchy before a single-static-import
-     * of the same simple name, so renaming into a name the enclosing class
+     * declares a method named {@code newName} with the SAME parameter list
+     * this call needs -- Java resolves an unqualified call against the
+     * enclosing class hierarchy before a single-static-import of the same
+     * simple name, so renaming into a name/signature the enclosing class
      * already has would silently redirect the call to that unrelated member
      * (observed: renaming a statically-imported method into a name the
-     * importing class already declares causes silent self-recursion instead of
-     * calling the intended target).
+     * importing class already declares causes silent self-recursion instead
+     * of calling the intended target). A colliding NAME with a DIFFERENT
+     * parameter list is just a legal new overload and is intentionally not
+     * refused -- Java resolves it correctly by arity/type, no ambiguity.
      *
-     * <p>This is a pure AST check, not a re-resolve of the mutated call: this
-     * library's resolver was found to be unreliable when asked to re-resolve a
-     * node that has already been mutated in place (even for definitely-correct
-     * renames), so verification here deliberately avoids relying on it.
+     * <p>This is a pure AST/resolved-parameter check, not a re-resolve of the
+     * mutated call: this library's resolver was found to be unreliable when
+     * asked to re-resolve a node that has already been mutated in place (even
+     * for definitely-correct renames), so verification here deliberately
+     * avoids relying on it.
      */
-    private static void rejectShadowingCollision(MethodCallExpr call, String newName, String oldName) {
-        java.util.Optional<TypeDeclaration<?>> ancestor = call.findAncestor(TypeDeclaration.class)
+    private static void rejectShadowingCollision(MethodCallExpr call, ResolvedMethodDeclaration resolvedCall,
+                                                   String newName, String oldName) {
+        List<ResolvedType> callParams = resolvedCall.formalParameterTypes();
+        Optional<TypeDeclaration<?>> ancestor = call.findAncestor(TypeDeclaration.class)
                 .map(RenameMethodRefactor::castTypeDeclaration);
         ancestor.ifPresent(enclosing -> {
-            boolean collides = enclosing.getMethods().stream()
-                    .anyMatch(m -> m.getNameAsString().equals(newName));
-            if (collides) {
-                throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
-                        + enclosing.getNameAsString() + "' (containing an unqualified call to '" + oldName
-                        + "' at " + call.getBegin().map(Object::toString).orElse("?")
-                        + ") already declares its own '" + newName
-                        + "' method, which would silently take priority over the intended call after the rename.");
+            for (MethodDeclaration candidate : enclosing.getMethods()) {
+                if (!candidate.getNameAsString().equals(newName)) {
+                    continue;
+                }
+                try {
+                    if (paramsMatch(candidate.resolve().formalParameterTypes(), callParams)) {
+                        throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+                                + enclosing.getNameAsString() + "' (containing an unqualified call to '" + oldName
+                                + "' at " + call.getBegin().map(Object::toString).orElse("?")
+                                + ") already declares its own '" + newName
+                                + "' method with the same parameter list, which would silently take priority "
+                                + "over the intended call after the rename.");
+                    }
+                } catch (RefactorException e) {
+                    throw e;
+                } catch (RuntimeException e) {
+                    // Can't resolve the existing candidate -- not this call's problem.
+                }
             }
         });
     }
 
     /**
+     * Refuses to rename a method that itself overrides a declaration further
+     * up the hierarchy: obelisk's override propagation only goes downward
+     * from the specified type, so starting from a non-root override would
+     * silently rename only part of the family, leaving the interface/
+     * superclass method and any sibling overrides out of sync (confirmed to
+     * otherwise produce a stale {@code @Override} and non-matching sibling
+     * declarations with no warning at all).
+     */
+    private static void rejectNonRootTarget(ResolvedMethodDeclaration resolvedTarget, String oldName,
+                                             TypeDeclaration<?> targetClass) {
+        List<ResolvedType> targetParams = resolvedTarget.formalParameterTypes();
+        for (ResolvedReferenceType ancestor : resolvedTarget.declaringType().getAllAncestors()) {
+            for (MethodUsage ancestorMethod : ancestor.getDeclaredMethods()) {
+                if (ancestorMethod.getName().equals(oldName)
+                        && overrideParamsMatch(ancestor, ancestorMethod, targetParams)) {
+                    throw new RefactorException("'" + targetClass.getNameAsString() + "." + oldName
+                            + "' overrides '" + ancestor.getQualifiedName() + "." + oldName
+                            + "'. Point --class at '" + ancestor.getQualifiedName() + "' to rename the whole "
+                            + "override family; renaming from a non-root override is refused to avoid leaving "
+                            + "the interface/superclass method and sibling overrides out of sync.");
+                }
+            }
+        }
+    }
+
+    /**
      * Finds every method elsewhere in the project that overrides the target:
-     * declared (by simple name + same erased parameter list) directly on a
-     * type that has {@code ownerQualifiedName} among its ancestors. Since
-     * {@code getAllAncestors()} is transitive, a single flat pass over every
-     * type in the project catches overrides at any depth in the hierarchy
-     * (subclass, sub-subclass, an interface's multiple implementors, etc.) --
-     * no separate recursion needed.
+     * resolves to a declaring type that has {@code ownerQualifiedName} among
+     * its ancestors, with a matching name and a parameter list that matches
+     * the ancestor method's parameter list AS SEEN THROUGH that specific
+     * ancestor -- see {@link #overrideParamsMatch}, which manually applies
+     * the ancestor's type-argument substitution (the library's own
+     * {@link ResolvedReferenceType#getDeclaredMethods()} does NOT do this).
+     * Not a raw text comparison, so a generic method like
+     * {@code interface Repo<T> { T get(); }} implemented as
+     * {@code UserRepo implements Repo<User>} correctly matches
+     * {@code User get()} against the substituted {@code T -> User}.
      *
-     * <p>Matches by name + erasure only (not covariant return types or access
-     * modifiers), and unresolvable candidates are skipped with a warning
-     * rather than failing the whole rename.
+     * <p>Scans every {@link MethodDeclaration} in the project directly
+     * (rather than only ones reachable via a named {@link TypeDeclaration}),
+     * so overrides declared in an anonymous class body or an enum constant's
+     * class body are found too -- {@code candidate.resolve()} works from AST
+     * position regardless of whether the enclosing type has a name.
+     *
+     * <p>Unresolvable candidates are skipped with a warning rather than
+     * failing the whole rename.
      */
     private static List<MethodDeclaration> findOverrides(ProjectContext ctx, String ownerQualifiedName,
-                                                           String oldName, String paramsSuffix,
+                                                           String oldName, MethodDeclaration targetMethod,
+                                                           ResolvedMethodDeclaration resolvedTarget,
                                                            List<String> warnings) {
         List<MethodDeclaration> overrides = new ArrayList<>();
         for (Map.Entry<Path, CompilationUnit> entry : ctx.unitsByFile().entrySet()) {
-            for (Object rawCandidate : entry.getValue().findAll(TypeDeclaration.class)) {
-                TypeDeclaration<?> candidate = castTypeDeclaration((TypeDeclaration) rawCandidate);
-                if (candidate.getFullyQualifiedName().filter(ownerQualifiedName::equals).isPresent()) {
-                    continue; // this is the root type itself, not a subtype
+            for (MethodDeclaration candidate : entry.getValue().findAll(MethodDeclaration.class)) {
+                if (candidate == targetMethod || !candidate.getNameAsString().equals(oldName)) {
+                    continue;
                 }
-
-                ResolvedReferenceTypeDeclaration resolvedCandidate;
-                boolean isSubtype;
                 try {
-                    resolvedCandidate = candidate.resolve();
-                    isSubtype = resolvedCandidate.getAllAncestors().stream()
-                            .map(ResolvedReferenceType::getQualifiedName)
-                            .anyMatch(ownerQualifiedName::equals);
+                    ResolvedMethodDeclaration resolvedCandidate = candidate.resolve();
+                    ResolvedReferenceTypeDeclaration declaringType = resolvedCandidate.declaringType();
+                    if (declaringType.getQualifiedName().equals(ownerQualifiedName)) {
+                        // An enum constant body's override of an abstract enum
+                        // method resolves declaringType() to the enum itself
+                        // (not a distinct synthetic type the way `new X() {}`
+                        // gets one), so it looks identical to an ordinary
+                        // sibling overload declared directly on the root type.
+                        // Distinguish by AST position: only treat it as the
+                        // root declaration's sibling (i.e. not an override) if
+                        // it ISN'T inside an enum constant's class body. Enums
+                        // can't be generic, so no substitution is needed here.
+                        boolean isEnumConstantOverride = candidate
+                                .findAncestor(com.github.javaparser.ast.body.EnumConstantDeclaration.class)
+                                .isPresent();
+                        if (isEnumConstantOverride
+                                && paramsMatch(resolvedCandidate.formalParameterTypes(),
+                                        resolvedTarget.formalParameterTypes())) {
+                            overrides.add(candidate);
+                        }
+                        continue;
+                    }
+                    List<ResolvedType> candidateParams = resolvedCandidate.formalParameterTypes();
+                    boolean overridesTarget = false;
+                    for (ResolvedReferenceType ancestor : declaringType.getAllAncestors()) {
+                        if (!ancestor.getQualifiedName().equals(ownerQualifiedName)) {
+                            continue;
+                        }
+                        for (MethodUsage ancestorMethod : ancestor.getDeclaredMethods()) {
+                            if (ancestorMethod.getName().equals(oldName)
+                                    && overrideParamsMatch(ancestor, ancestorMethod, candidateParams)) {
+                                overridesTarget = true;
+                                break;
+                            }
+                        }
+                        if (overridesTarget) {
+                            break;
+                        }
+                    }
+                    if (overridesTarget) {
+                        overrides.add(candidate);
+                    }
                 } catch (RuntimeException e) {
                     warnings.add("Could not check '" + candidate.getNameAsString() + "' in " + entry.getKey()
                             + " for overrides (skipped): " + e.getMessage());
-                    continue;
-                }
-                if (!isSubtype) {
-                    continue;
-                }
-
-                for (MethodDeclaration method : candidate.getMethods()) {
-                    if (!method.getNameAsString().equals(oldName)) {
-                        continue;
-                    }
-                    try {
-                        String suffix = signatureOf(method.resolve());
-                        if (suffix.substring(suffix.indexOf('(')).equals(paramsSuffix)) {
-                            overrides.add(method);
-                        }
-                    } catch (RuntimeException e) {
-                        warnings.add("Could not resolve '" + candidate.getNameAsString() + "." + oldName
-                                + "' in " + entry.getKey() + " to check whether it overrides the target (skipped): "
-                                + e.getMessage());
-                    }
                 }
             }
         }
         return overrides;
+    }
+
+    /**
+     * Finds static imports whose qualifier actually resolves to the root
+     * declaring type or one of its subtypes (so an import of the target
+     * reached via a subclass name is still caught), rather than matching by
+     * simple import-name text alone -- which would also rewrite an unrelated
+     * static import of a same-named method on a different, unrelated class.
+     */
+    private static Set<ImportDeclaration> findStaticImportsToRename(ProjectContext ctx, String ownerQualifiedName,
+                                                                      String oldName) {
+        Set<ImportDeclaration> result = new LinkedHashSet<>();
+        for (CompilationUnit cu : ctx.unitsByFile().values()) {
+            for (ImportDeclaration imp : cu.getImports()) {
+                if (!imp.isStatic() || imp.isAsterisk()) {
+                    continue;
+                }
+                String qualifiedName = imp.getNameAsString();
+                int lastDot = qualifiedName.lastIndexOf('.');
+                if (lastDot < 0 || !qualifiedName.substring(lastDot + 1).equals(oldName)) {
+                    continue;
+                }
+                String qualifier = qualifiedName.substring(0, lastDot);
+                SymbolReference<ResolvedReferenceTypeDeclaration> resolved = ctx.typeSolver().tryToSolveType(qualifier);
+                if (!resolved.isSolved()) {
+                    continue;
+                }
+                ResolvedReferenceTypeDeclaration decl = resolved.getCorrespondingDeclaration();
+                boolean matchesFamily = decl.getQualifiedName().equals(ownerQualifiedName)
+                        || decl.getAllAncestors().stream().anyMatch(a -> a.getQualifiedName().equals(ownerQualifiedName));
+                if (matchesFamily) {
+                    result.add(imp);
+                }
+            }
+        }
+        return result;
+    }
+
+    private static boolean paramsMatch(List<ResolvedType> a, List<ResolvedType> b) {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (int i = 0; i < a.size(); i++) {
+            if (!a.get(i).describe().equals(b.get(i).describe())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Like {@link #paramsMatch}, but for comparing an ancestor's method
+     * (as returned by {@link ResolvedReferenceType#getDeclaredMethods()},
+     * which does NOT substitute the ancestor's own type arguments into its
+     * methods' parameter types -- confirmed empirically: for
+     * {@code UserRepo implements Repo<User>}, the ancestor {@code Repo<User>}
+     * still reports its {@code save} method's parameter as the raw type
+     * variable {@code T}, not {@code User}) against a candidate's already-
+     * concrete parameter types. Each ancestor-method type variable is looked
+     * up in the ancestor's own {@link ResolvedReferenceType#typeParametersMap()}
+     * before comparing.
+     */
+    private static boolean overrideParamsMatch(ResolvedReferenceType ancestor, MethodUsage ancestorMethod,
+                                                List<ResolvedType> candidateParams) {
+        List<ResolvedType> ancestorParams = ancestorMethod.getParamTypes();
+        if (ancestorParams.size() != candidateParams.size()) {
+            return false;
+        }
+        for (int i = 0; i < ancestorParams.size(); i++) {
+            ResolvedType substituted = substitute(ancestor, ancestorParams.get(i));
+            if (!substituted.describe().equals(candidateParams.get(i).describe())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static ResolvedType substitute(ResolvedReferenceType ancestor, ResolvedType type) {
+        if (type.isTypeVariable()) {
+            try {
+                ResolvedType value = ancestor.typeParametersMap().getValue(type.asTypeVariable().asTypeParameter());
+                if (value != null) {
+                    return value;
+                }
+            } catch (RuntimeException ignored) {
+                // fall through and compare unsubstituted rather than fail the whole rename
+            }
+        }
+        return type;
     }
 
     @SuppressWarnings("unchecked")
@@ -404,11 +563,6 @@ public final class RenameMethodRefactor {
         return decl.getQualifiedSignature();
     }
 
-    private static String simpleNameOf(String dottedName) {
-        int lastDot = dottedName.lastIndexOf('.');
-        return lastDot < 0 ? dottedName : dottedName.substring(lastDot + 1);
-    }
-
     /** Builds a proper qualifier-chain {@link Name} rather than one dotted identifier. */
     private static Name qualifiedName(String dotted) {
         String[] parts = dotted.split("\\.");
@@ -452,14 +606,17 @@ public final class RenameMethodRefactor {
      * file over its real target. This keeps a mid-write failure (disk full,
      * permission denied on file N of M) from ever leaving a source file with
      * truncated or partial content; the only remaining risk window is the
-     * near-instant rename/move itself, not the content write.
+     * near-instant rename/move itself, not the content write. The temp
+     * filename includes a random suffix so two obelisk invocations touching
+     * the same file concurrently don't collide.
      */
     private static void writeAll(Map<Path, String> updatedContents) {
         Map<Path, Path> tempFiles = new LinkedHashMap<>();
         try {
             for (Map.Entry<Path, String> entry : updatedContents.entrySet()) {
                 Path target = entry.getKey();
-                Path temp = target.resolveSibling(target.getFileName() + ".obelisk-tmp");
+                Path temp = target.resolveSibling(target.getFileName() + ".obelisk-tmp-"
+                        + java.util.UUID.randomUUID());
                 Files.writeString(temp, entry.getValue());
                 tempFiles.put(target, temp);
             }

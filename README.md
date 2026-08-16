@@ -67,10 +67,11 @@ resolve (and therefore left untouched).
 
 - the method declaration itself
 - every overriding declaration found elsewhere in the project (subclasses,
-  implementing classes, at any depth) — `--class` must name the *root*
-  declaration (the interface/superclass method); renaming from a subclass's
-  override does not walk back up to rename the interface method or sibling
-  overrides in other subclasses
+  implementing classes, anonymous classes, enum constant bodies, at any
+  depth, including through generic type substitution) — `--class` must name
+  the *root* declaration; pointing at a method that itself overrides
+  something further up is refused rather than silently renaming only part
+  of the family
 - every call site (`foo.bar()`, `bar()` self-calls, `this.bar()`,
   `super.bar()`) that resolves back to the target declaration or any of its
   overrides
@@ -123,9 +124,9 @@ requests for multiple projects — see [Known limitations](#known-limitations).
 
 - Maven only; no Gradle classpath resolution yet.
 - Override propagation only goes downward from the type named in `--class`.
-  Renaming a subclass's override doesn't walk back up to also rename the
-  interface/superclass method or sibling overrides in other subclasses —
-  point `--class` at the root declaration to rename the whole family.
+  If the method you point at itself overrides something further up the
+  hierarchy, obelisk refuses outright (naming the root to target instead)
+  rather than silently renaming only part of the family.
 - Multi-module Maven projects: classpath resolution runs against a single
   module in isolation (not reactor-aware). If a sibling module dependency
   hasn't been `mvn install`ed to the local repo, resolution fails outright

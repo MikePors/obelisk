@@ -9,6 +9,8 @@ import com.github.javaparser.ast.expr.MethodReferenceExpr;
 import com.github.javaparser.ast.expr.Name;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
+import com.github.javaparser.resolution.types.ResolvedReferenceType;
 import dev.obelisk.core.DiffUtil;
 import dev.obelisk.core.ProjectContext;
 import dev.obelisk.core.RefactorException;
@@ -31,13 +33,20 @@ import java.util.Set;
  * plus every call site, method reference, and static import obelisk can
  * resolve back to that exact declaration.
  *
+ * Also renames every overriding declaration found elsewhere in the project
+ * (subclasses, implementing classes), plus their own call sites/references,
+ * so the whole override family stays in sync -- see {@link #findOverrides}.
+ *
  * V1 known limitations (fail loudly rather than guess):
  *  - the class must be uniquely identified by simple name across the project
  *    (top-level types take priority over nested types of the same name --
  *    see {@link #findClass})
  *  - overloaded methods with the target name must be disambiguated by the
  *    caller (not yet supported) -- refuses to guess which overload
- *  - overriding declarations in subclasses/interfaces are not renamed
+ *  - override propagation is downward only: {@code --class} must name the
+ *    root declaration (the interface/superclass method). Renaming from a
+ *    subclass's override does not walk back up to rename the interface
+ *    method or sibling overrides in other subclasses.
  */
 public final class RenameMethodRefactor {
 
@@ -55,9 +64,26 @@ public final class RenameMethodRefactor {
         String ownerQualifiedName = resolvedTarget.declaringType().getQualifiedName();
         String paramsSuffix = targetSignature.substring(targetSignature.indexOf('('));
 
-        rejectDuplicateSignature(targetClass, newName, paramsSuffix, oldName);
-
         List<String> warnings = new ArrayList<>();
+
+        // Find every declaration elsewhere in the project that overrides this
+        // one, so the whole family gets renamed together instead of leaving
+        // subclasses out of sync with the interface/superclass they implement.
+        List<MethodDeclaration> overrides = findOverrides(ctx, ownerQualifiedName, oldName, paramsSuffix, warnings);
+        List<MethodDeclaration> familyDeclarations = new ArrayList<>();
+        familyDeclarations.add(targetMethod);
+        familyDeclarations.addAll(overrides);
+
+        Set<String> familySignatures = new LinkedHashSet<>();
+        familySignatures.add(targetSignature);
+        for (MethodDeclaration override : familyDeclarations.subList(1, familyDeclarations.size())) {
+            familySignatures.add(signatureOf(override.resolve()));
+        }
+
+        for (MethodDeclaration member : familyDeclarations) {
+            member.findAncestor(TypeDeclaration.class).ifPresent(owner ->
+                    rejectDuplicateSignature(castTypeDeclaration(owner), newName, paramsSuffix, oldName));
+        }
 
         // Resolve every matching call site / method reference / static import
         // against the ORIGINAL (unmodified) AST first, and defer every mutation
@@ -75,7 +101,7 @@ public final class RenameMethodRefactor {
                     continue;
                 }
                 ResolvedMethodDeclaration resolved = tryResolve(call, warnings, ctx, cu);
-                if (resolved == null || !signatureOf(resolved).equals(targetSignature)) {
+                if (resolved == null || !familySignatures.contains(signatureOf(resolved))) {
                     continue;
                 }
                 callsToRename.add(call);
@@ -110,7 +136,7 @@ public final class RenameMethodRefactor {
                 }
                 try {
                     ResolvedMethodDeclaration resolved = ref.resolve();
-                    if (signatureOf(resolved).equals(targetSignature)) {
+                    if (familySignatures.contains(signatureOf(resolved))) {
                         refsToRename.add(ref);
                     }
                 } catch (RuntimeException e) {
@@ -121,8 +147,10 @@ public final class RenameMethodRefactor {
         }
 
         Map<Path, String> originalContents = new LinkedHashMap<>();
-        originalContents.computeIfAbsent(fileOf(ctx, targetMethod.findCompilationUnit().orElseThrow()),
-                RenameMethodRefactor::readOriginal);
+        for (MethodDeclaration member : familyDeclarations) {
+            originalContents.computeIfAbsent(fileOf(ctx, member.findCompilationUnit().orElseThrow()),
+                    RenameMethodRefactor::readOriginal);
+        }
         for (MethodCallExpr call : callsToRename) {
             originalContents.computeIfAbsent(fileOf(ctx, call.findCompilationUnit().orElseThrow()),
                     RenameMethodRefactor::readOriginal);
@@ -137,7 +165,9 @@ public final class RenameMethodRefactor {
         }
 
         // Apply every mutation together.
-        targetMethod.getName().setIdentifier(newName);
+        for (MethodDeclaration member : familyDeclarations) {
+            member.getName().setIdentifier(newName);
+        }
         for (MethodCallExpr call : callsToRename) {
             call.getName().setIdentifier(newName);
         }
@@ -221,12 +251,8 @@ public final class RenameMethodRefactor {
      * renames), so verification here deliberately avoids relying on it.
      */
     private static void rejectShadowingCollision(MethodCallExpr call, String newName, String oldName) {
-        // findAncestor(Class) only accepts a raw Class token (TypeDeclaration is
-        // itself generic), so the result comes back raw; cast once here rather
-        // than scattering unchecked raw-type usages below.
-        @SuppressWarnings("unchecked")
-        java.util.Optional<TypeDeclaration<?>> ancestor =
-                (java.util.Optional<TypeDeclaration<?>>) (java.util.Optional<?>) call.findAncestor(TypeDeclaration.class);
+        java.util.Optional<TypeDeclaration<?>> ancestor = call.findAncestor(TypeDeclaration.class)
+                .map(RenameMethodRefactor::castTypeDeclaration);
         ancestor.ifPresent(enclosing -> {
             boolean collides = enclosing.getMethods().stream()
                     .anyMatch(m -> m.getNameAsString().equals(newName));
@@ -238,6 +264,71 @@ public final class RenameMethodRefactor {
                         + "' method, which would silently take priority over the intended call after the rename.");
             }
         });
+    }
+
+    /**
+     * Finds every method elsewhere in the project that overrides the target:
+     * declared (by simple name + same erased parameter list) directly on a
+     * type that has {@code ownerQualifiedName} among its ancestors. Since
+     * {@code getAllAncestors()} is transitive, a single flat pass over every
+     * type in the project catches overrides at any depth in the hierarchy
+     * (subclass, sub-subclass, an interface's multiple implementors, etc.) --
+     * no separate recursion needed.
+     *
+     * <p>Matches by name + erasure only (not covariant return types or access
+     * modifiers), and unresolvable candidates are skipped with a warning
+     * rather than failing the whole rename.
+     */
+    private static List<MethodDeclaration> findOverrides(ProjectContext ctx, String ownerQualifiedName,
+                                                           String oldName, String paramsSuffix,
+                                                           List<String> warnings) {
+        List<MethodDeclaration> overrides = new ArrayList<>();
+        for (Map.Entry<Path, CompilationUnit> entry : ctx.unitsByFile().entrySet()) {
+            for (Object rawCandidate : entry.getValue().findAll(TypeDeclaration.class)) {
+                TypeDeclaration<?> candidate = castTypeDeclaration((TypeDeclaration) rawCandidate);
+                if (candidate.getFullyQualifiedName().filter(ownerQualifiedName::equals).isPresent()) {
+                    continue; // this is the root type itself, not a subtype
+                }
+
+                ResolvedReferenceTypeDeclaration resolvedCandidate;
+                boolean isSubtype;
+                try {
+                    resolvedCandidate = candidate.resolve();
+                    isSubtype = resolvedCandidate.getAllAncestors().stream()
+                            .map(ResolvedReferenceType::getQualifiedName)
+                            .anyMatch(ownerQualifiedName::equals);
+                } catch (RuntimeException e) {
+                    warnings.add("Could not check '" + candidate.getNameAsString() + "' in " + entry.getKey()
+                            + " for overrides (skipped): " + e.getMessage());
+                    continue;
+                }
+                if (!isSubtype) {
+                    continue;
+                }
+
+                for (MethodDeclaration method : candidate.getMethods()) {
+                    if (!method.getNameAsString().equals(oldName)) {
+                        continue;
+                    }
+                    try {
+                        String suffix = signatureOf(method.resolve());
+                        if (suffix.substring(suffix.indexOf('(')).equals(paramsSuffix)) {
+                            overrides.add(method);
+                        }
+                    } catch (RuntimeException e) {
+                        warnings.add("Could not resolve '" + candidate.getNameAsString() + "." + oldName
+                                + "' in " + entry.getKey() + " to check whether it overrides the target (skipped): "
+                                + e.getMessage());
+                    }
+                }
+            }
+        }
+        return overrides;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static TypeDeclaration<?> castTypeDeclaration(TypeDeclaration raw) {
+        return (TypeDeclaration<?>) raw;
     }
 
     /**

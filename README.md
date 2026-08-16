@@ -66,10 +66,17 @@ resolve (and therefore left untouched).
 ### What it renames
 
 - the method declaration itself
-- every call site (`foo.bar()`, `bar()` self-calls, `this.bar()`) that
-  resolves back to that exact declaration
+- every overriding declaration found elsewhere in the project (subclasses,
+  implementing classes, at any depth) — `--class` must name the *root*
+  declaration (the interface/superclass method); renaming from a subclass's
+  override does not walk back up to rename the interface method or sibling
+  overrides in other subclasses
+- every call site (`foo.bar()`, `bar()` self-calls, `this.bar()`,
+  `super.bar()`) that resolves back to the target declaration or any of its
+  overrides
 - method references (`Foo::bar`)
-- matching static imports (`import static com.example.Foo.bar;`)
+- matching static imports (`import static com.example.Foo.bar;`), including
+  ones that reach the method through a subclass name
 
 ### What it refuses to do (fails loudly instead of guessing)
 
@@ -81,6 +88,11 @@ resolve (and therefore left untouched).
 - **Overloaded methods**: if the method name is overloaded on the target
   class, obelisk refuses to guess which overload you meant. There is no
   parameter-list disambiguation yet.
+- **Invalid or colliding `--to`**: rejects non-identifiers/keywords, a name
+  that would duplicate an existing method signature on the same class, and
+  renaming an unqualified call into a name its enclosing class already
+  declares (which would silently shadow the intended target instead of
+  producing the renamed call).
 - **Unparseable source**: if any file under the project's source roots fails
   to parse, obelisk reports the file and reason and stops.
 
@@ -110,8 +122,10 @@ requests for multiple projects — see [Known limitations](#known-limitations).
 ## Known limitations
 
 - Maven only; no Gradle classpath resolution yet.
-- Overriding methods in subclasses/interfaces are not renamed — only exact
-  signature matches against the original declaring type.
+- Override propagation only goes downward from the type named in `--class`.
+  Renaming a subclass's override doesn't walk back up to also rename the
+  interface/superclass method or sibling overrides in other subclasses —
+  point `--class` at the root declaration to rename the whole family.
 - Multi-module Maven projects: classpath resolution runs against a single
   module in isolation (not reactor-aware). If a sibling module dependency
   hasn't been `mvn install`ed to the local repo, resolution fails outright

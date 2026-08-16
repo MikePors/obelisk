@@ -30,25 +30,23 @@ public class RenameMethodCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        try {
-            ProjectContext ctx = ProjectContext.load(projectDir.toAbsolutePath().normalize());
+        try (ProjectContext ctx = ProjectContext.load(projectDir.toAbsolutePath().normalize())) {
             RefactorResult result = RenameMethodRefactor.run(ctx, className, from, to, !dryRun);
 
-            if (result.isEmpty()) {
-                System.out.println("No changes: nothing resolved back to " + className + "." + from + "()");
-                return 0;
-            }
-
-            for (String file : result.diffs().keySet().stream().map(Object::toString).sorted().toList()) {
-                System.out.println(result.diffs().get(Path.of(file)));
+            for (Path file : result.diffs().keySet().stream().sorted().toList()) {
+                System.out.println(result.diffs().get(file));
             }
 
             for (String warning : result.warnings()) {
                 System.err.println("warning: " + warning);
             }
 
-            System.out.println((dryRun ? "[dry run] " : "") + "Changed " + result.changedFiles().size()
-                    + " file(s) renaming " + className + "." + from + "() -> " + to + "()");
+            if (result.isEmpty()) {
+                System.out.println("No changes: nothing resolved back to " + className + "." + from + "()");
+            } else {
+                System.out.println((dryRun ? "[dry run] " : "") + "Changed " + result.changedFiles().size()
+                        + " file(s) renaming " + className + "." + from + "() -> " + to + "()");
+            }
             return 0;
         } catch (RefactorException e) {
             System.err.println("error: " + e.getMessage());

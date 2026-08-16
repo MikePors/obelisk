@@ -6,6 +6,7 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
+import com.github.javaparser.symbolsolver.javaparsermodel.JavaParserFacade;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ClassLoaderTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
@@ -19,6 +20,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,17 +30,28 @@ import java.util.stream.Stream;
  * A parsed, symbol-resolvable view of a Maven project: every {@code .java} file
  * under its source roots, wired up to a type solver that knows about the
  * project's real dependencies (see {@link ClasspathResolver}).
+ *
+ * <p>{@link #close()} releases resources tied to this context (classloaders
+ * opened for directory classpath entries, JavaParser's internal resolution
+ * cache). Callers should use it in a try-with-resources block. The
+ * resolution-cache clear ({@link JavaParserFacade#clearInstances()}) is
+ * process-wide, not scoped to just this context -- fine for a one-shot CLI
+ * process, but something a future long-lived MCP server handling multiple
+ * projects will want a less blunt strategy for (see obelisk README).
  */
-public final class ProjectContext {
+public final class ProjectContext implements AutoCloseable {
 
     private final Path projectDir;
     private final List<Path> sourceRoots;
     private final Map<Path, CompilationUnit> unitsByFile;
+    private final List<URLClassLoader> classLoaders;
 
-    private ProjectContext(Path projectDir, List<Path> sourceRoots, Map<Path, CompilationUnit> unitsByFile) {
+    private ProjectContext(Path projectDir, List<Path> sourceRoots, Map<Path, CompilationUnit> unitsByFile,
+                            List<URLClassLoader> classLoaders) {
         this.projectDir = projectDir;
         this.sourceRoots = sourceRoots;
         this.unitsByFile = unitsByFile;
+        this.classLoaders = classLoaders;
     }
 
     public static ProjectContext load(Path projectDir) {
@@ -48,10 +61,30 @@ public final class ProjectContext {
                     "No source roots found under " + projectDir + " (expected src/main/java and/or src/test/java)");
         }
 
+        List<URLClassLoader> classLoaders = new ArrayList<>();
         CombinedTypeSolver typeSolver = new CombinedTypeSolver();
+        // Built up front so it can be threaded into every JavaParserTypeSolver
+        // below (see the note further down on why that matters): JavaSymbolSolver
+        // only needs a reference to `typeSolver`, which is safe to keep
+        // populating with .add() after construction, so this ordering doesn't
+        // create a chicken-and-egg problem.
+        JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver);
+        ParserConfiguration config = new ParserConfiguration()
+                .setSymbolResolver(symbolSolver)
+                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21);
+
         typeSolver.add(new ReflectionTypeSolver());
         for (Path sourceRoot : sourceRoots) {
-            typeSolver.add(new JavaParserTypeSolver(sourceRoot));
+            // Pass our config, not the default one: without it, whenever this
+            // solver parses a file on demand to look up a type (e.g. resolving
+            // a static import target, or a method inherited from a supertype),
+            // it does so with a parser that has no symbol resolver of its own
+            // wired in -- any resolution that needs to look *further* into that
+            // type (inherited members, its own supertypes) then fails outright,
+            // and it wouldn't understand records/newer syntax either. Confirmed
+            // by direct repro: an otherwise-correct static-import rename failed
+            // to re-resolve until this was fixed.
+            typeSolver.add(new JavaParserTypeSolver(sourceRoot, config));
         }
         for (String entry : ClasspathResolver.resolve(projectDir)) {
             Path entryPath = Path.of(entry);
@@ -74,7 +107,8 @@ public final class ProjectContext {
                 // being mutated.
                 try {
                     URL url = entryPath.toUri().toURL();
-                    ClassLoader classLoader = new URLClassLoader(new URL[]{url}, ProjectContext.class.getClassLoader());
+                    URLClassLoader classLoader = new URLClassLoader(new URL[]{url}, ProjectContext.class.getClassLoader());
+                    classLoaders.add(classLoader);
                     typeSolver.add(new ClassLoaderTypeSolver(classLoader));
                 } catch (MalformedURLException e) {
                     throw new RefactorException("Failed to load classpath directory: " + entry, e);
@@ -82,10 +116,6 @@ public final class ProjectContext {
             }
         }
 
-        JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver);
-        ParserConfiguration config = new ParserConfiguration()
-                .setSymbolResolver(symbolSolver)
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21);
         // Use a JavaParser instance scoped to this call rather than the
         // StaticJavaParser global/static configuration: obelisk will eventually
         // run as a long-lived MCP server handling multiple projects, possibly
@@ -112,7 +142,19 @@ public final class ProjectContext {
             }
         }
 
-        return new ProjectContext(projectDir, sourceRoots, unitsByFile);
+        return new ProjectContext(projectDir, sourceRoots, unitsByFile, classLoaders);
+    }
+
+    @Override
+    public void close() {
+        JavaParserFacade.clearInstances();
+        for (URLClassLoader classLoader : classLoaders) {
+            try {
+                classLoader.close();
+            } catch (IOException ignored) {
+                // best-effort cleanup
+            }
+        }
     }
 
     private static List<Path> discoverSourceRoots(Path projectDir) {

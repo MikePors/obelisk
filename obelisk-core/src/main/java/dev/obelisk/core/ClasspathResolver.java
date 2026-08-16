@@ -1,7 +1,6 @@
 package dev.obelisk.core;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -52,7 +51,8 @@ public final class ClasspathResolver {
                 Files.deleteIfExists(outputFile);
             }
         } catch (IOException e) {
-            throw new UncheckedIOException(e);
+            throw new RefactorException("Failed to run 'mvn dependency:build-classpath' in " + projectDir
+                    + " (is Maven installed and on PATH?): " + e.getMessage(), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new RefactorException("Interrupted while resolving classpath", e);

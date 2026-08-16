@@ -6,6 +6,7 @@ import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.ClassLoaderTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JarTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
@@ -13,6 +14,9 @@ import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeS
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -57,10 +61,25 @@ public final class ProjectContext {
                 } catch (IOException e) {
                     throw new UncheckedIOException("Failed to load classpath jar: " + entry, e);
                 }
+            } else if (Files.isDirectory(entryPath)) {
+                // ClasspathResolver currently resolves this single module in
+                // isolation (not reactor-aware), so an uninstalled sibling
+                // module fails there outright rather than surfacing as a
+                // directory entry here -- this branch is dormant today. It's
+                // kept for when that changes (reactor-aware resolution, or
+                // Gradle support), since a directory of .class files is valid
+                // read-only resolution context either way: obelisk never
+                // renames anything outside the requested project's own source
+                // roots, so loading them here doesn't put them at risk of
+                // being mutated.
+                try {
+                    URL url = entryPath.toUri().toURL();
+                    ClassLoader classLoader = new URLClassLoader(new URL[]{url}, ProjectContext.class.getClassLoader());
+                    typeSolver.add(new ClassLoaderTypeSolver(classLoader));
+                } catch (MalformedURLException e) {
+                    throw new RefactorException("Failed to load classpath directory: " + entry, e);
+                }
             }
-            // Directory classpath entries (e.g. target/classes) are intentionally
-            // skipped for now: JavaParser has no built-in solver for loose .class
-            // directories. Known limitation, revisit if it causes real misses.
         }
 
         JavaSymbolSolver symbolSolver = new JavaSymbolSolver(typeSolver);

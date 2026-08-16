@@ -112,8 +112,12 @@ requests for multiple projects — see [Known limitations](#known-limitations).
 - Maven only; no Gradle classpath resolution yet.
 - Overriding methods in subclasses/interfaces are not renamed — only exact
   signature matches against the original declaring type.
-- Classpath directory entries (e.g. `target/classes`) are skipped when
-  resolving symbols; only `.jar` entries are used.
+- Multi-module Maven projects: classpath resolution runs against a single
+  module in isolation (not reactor-aware). If a sibling module dependency
+  hasn't been `mvn install`ed to the local repo, resolution fails outright
+  with a clear error rather than silently degrading. Install sibling modules
+  first (`mvn install -DskipTests` from the reactor root) before running
+  obelisk against a module that depends on them.
 - No handling yet for renames referenced only in comments, Javadoc
   `{@link}`/`{@code}` tags, or string literals (e.g. reflection).
 - Every CLI invocation reparses the whole project from scratch — fine for

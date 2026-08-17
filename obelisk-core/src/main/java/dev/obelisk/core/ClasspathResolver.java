@@ -35,6 +35,12 @@ import java.util.Optional;
  * and a reactor is detected -- it never runs, and nothing gets compiled, for
  * an ordinary single-module project or one where every dependency is already
  * installed.
+ *
+ * <p>Unlike the fast path, the fallback is NOT read-only: it compiles the
+ * module and its upstream reactor dependencies, writing real build output.
+ * This happens even under {@code --dry-run}, since resolving symbols at all
+ * requires it -- a notice is printed to stderr when it triggers so this
+ * isn't a silent surprise.
  */
 public final class ClasspathResolver {
 
@@ -48,50 +54,72 @@ public final class ClasspathResolver {
         try {
             return runMavenClasspath(projectDir, List.of(), "mvn dependency:build-classpath");
         } catch (RefactorException standaloneFailure) {
+            // A retry can't help if mvn itself couldn't be started, or if we
+            // were interrupted (runProcess restores the interrupt flag before
+            // throwing in that case) -- rethrow immediately rather than
+            // spawning a second, heavier attempt that's doomed either way.
+            if (Thread.currentThread().isInterrupted() || standaloneFailure.getCause() instanceof IOException) {
+                throw standaloneFailure;
+            }
             Optional<Path> reactorRoot = findReactorRoot(projectDir);
             if (reactorRoot.isEmpty()) {
                 throw standaloneFailure;
             }
             Path root = reactorRoot.get();
             String modulePath = relativeModulePath(root, projectDir);
+            System.err.println("obelisk: sibling module dependency not resolvable in isolation; falling back to "
+                    + "a reactor build (mvn -pl " + modulePath + " -am compile) from " + root
+                    + " -- this compiles upstream modules and may take a while.");
             try {
-                return runMavenClasspath(root, List.of("-pl", modulePath, "-am", "compile"),
+                List<String> entries = runMavenClasspath(root, List.of("-pl", modulePath, "-am", "compile"),
                         "mvn -pl " + modulePath + " -am compile dependency:build-classpath (reactor-aware fallback)");
+                if (entries.isEmpty()) {
+                    System.err.println("obelisk: warning: reactor-aware classpath resolution for " + modulePath
+                            + " returned zero entries -- if this module has real dependencies, verify manually "
+                            + "with 'mvn -pl " + modulePath + " -am dependency:build-classpath' from " + root + ".");
+                }
+                return entries;
             } catch (RefactorException reactorFailure) {
-                throw new RefactorException("Classpath resolution failed.\nStandalone attempt: "
-                        + standaloneFailure.getMessage() + "\nReactor-aware fallback (reactor root " + root
-                        + "): " + reactorFailure.getMessage(), reactorFailure);
+                RefactorException combined = new RefactorException("Classpath resolution failed.\nStandalone "
+                        + "attempt: " + standaloneFailure.getMessage() + "\nReactor-aware fallback (reactor root "
+                        + root + "): " + reactorFailure.getMessage(), reactorFailure);
+                combined.addSuppressed(standaloneFailure);
+                throw combined;
             }
         }
     }
 
     /**
      * Walks up from {@code projectDir} looking for the outermost ancestor pom
-     * that lists the directory below it as a {@code <module>} -- i.e. the
-     * root of the multi-module reactor {@code projectDir} belongs to, if any.
-     * Climbs past nested reactors (a reactor root that is itself a module of
-     * a further-out parent) rather than stopping at the first match.
+     * that (transitively) lists it as a {@code <module>} -- i.e. the root of
+     * the multi-module reactor {@code projectDir} belongs to, if any.
+     *
+     * <p>A {@code <module>} entry can be a multi-segment relative path (e.g.
+     * {@code <module>group/module-b</module>}) with no {@code pom.xml} of its
+     * own in the intervening directory, so this keeps climbing past ancestors
+     * that don't have a pom (or whose pom doesn't list the current reference
+     * point) rather than stopping at the first miss -- it only updates the
+     * reference point (and the best-known root) on an actual match, so an
+     * unrelated pom.xml higher up the tree that doesn't list anything
+     * relevant is climbed past harmlessly.
      */
     private static Optional<Path> findReactorRoot(Path projectDir) {
         Path child = projectDir.toAbsolutePath().normalize();
         Path bestRoot = null;
-        while (true) {
-            Path parent = child.getParent();
-            if (parent == null) {
-                break;
+        Path candidate = child.getParent();
+        while (candidate != null) {
+            Path candidatePom = candidate.resolve("pom.xml");
+            if (Files.isRegularFile(candidatePom)) {
+                Path currentCandidate = candidate;
+                Path matchTarget = child;
+                boolean listsChild = parseModules(candidatePom).stream()
+                        .anyMatch(module -> currentCandidate.resolve(module).normalize().equals(matchTarget));
+                if (listsChild) {
+                    bestRoot = candidate;
+                    child = candidate;
+                }
             }
-            Path parentPom = parent.resolve("pom.xml");
-            if (!Files.isRegularFile(parentPom)) {
-                break;
-            }
-            Path currentChild = child;
-            boolean listsChild = parseModules(parentPom).stream()
-                    .anyMatch(module -> parent.resolve(module).normalize().equals(currentChild));
-            if (!listsChild) {
-                break;
-            }
-            bestRoot = parent;
-            child = parent;
+            candidate = candidate.getParent();
         }
         return Optional.ofNullable(bestRoot);
     }
@@ -110,7 +138,11 @@ public final class ClasspathResolver {
             return modules;
         } catch (Exception e) {
             // Malformed or unreadable pom -- treat as "declares no modules"
-            // rather than failing the whole resolution over it.
+            // rather than failing the whole resolution over it, but this
+            // would silently disable the reactor-aware fallback with no clue
+            // why, so make it visible.
+            System.err.println("obelisk: warning: could not parse " + pomFile + " while looking for a reactor "
+                    + "root (" + e.getMessage() + "); treating it as declaring no modules.");
             return List.of();
         }
     }
@@ -158,11 +190,12 @@ public final class ClasspathResolver {
     }
 
     private static void runProcess(Path workingDir, List<String> command, String description) {
+        Process process = null;
         try {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(workingDir.toFile());
             pb.redirectErrorStream(true);
-            Process process = pb.start();
+            process = pb.start();
             String output = new String(process.getInputStream().readAllBytes());
             int exitCode = process.waitFor();
             if (exitCode != 0) {
@@ -172,6 +205,11 @@ public final class ClasspathResolver {
             throw new RefactorException("Failed to run '" + description + "' in " + workingDir
                     + " (is Maven installed and on PATH?): " + e.getMessage(), e);
         } catch (InterruptedException e) {
+            if (process != null) {
+                // Don't leave the child mvn process running in the background
+                // after we've given up on it.
+                process.destroyForcibly();
+            }
             Thread.currentThread().interrupt();
             throw new RefactorException("Interrupted while running '" + description + "'", e);
         }

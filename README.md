@@ -139,7 +139,9 @@ requests for multiple projects — see [Known limitations](#known-limitations).
   the classpath, so no manual `mvn install` step is needed. This fallback
   only triggers on failure; it never runs (and nothing gets compiled) for an
   ordinary single-module project or one where every dependency is already
-  installed.
+  installed. Unlike the fast path, this fallback is not read-only and not
+  fast — it prints a notice to stderr when it triggers, since it happens
+  even under `--dry-run` (resolving symbols at all requires it).
 - No handling yet for renames referenced only in comments, Javadoc
   `{@link}`/`{@code}` tags, or string literals (e.g. reflection).
 - Every CLI invocation reparses the whole project from scratch — fine for

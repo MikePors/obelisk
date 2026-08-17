@@ -131,12 +131,15 @@ requests for multiple projects — see [Known limitations](#known-limitations).
   If the method you point at itself overrides something further up the
   hierarchy, obelisk refuses outright (naming the root to target instead)
   rather than silently renaming only part of the family.
-- Multi-module Maven projects: classpath resolution runs against a single
-  module in isolation (not reactor-aware). If a sibling module dependency
-  hasn't been `mvn install`ed to the local repo, resolution fails outright
-  with a clear error rather than silently degrading. Install sibling modules
-  first (`mvn install -DskipTests` from the reactor root) before running
-  obelisk against a module that depends on them.
+- Multi-module Maven projects: classpath resolution tries the target module
+  in isolation first (fast, read-only). If that fails because of an
+  uninstalled sibling module *and* the project is part of a detected
+  reactor, obelisk automatically falls back to a reactor-aware resolution —
+  it compiles the module and its upstream reactor dependencies and re-queries
+  the classpath, so no manual `mvn install` step is needed. This fallback
+  only triggers on failure; it never runs (and nothing gets compiled) for an
+  ordinary single-module project or one where every dependency is already
+  installed.
 - No handling yet for renames referenced only in comments, Javadoc
   `{@link}`/`{@code}` tags, or string literals (e.g. reflection).
 - Every CLI invocation reparses the whole project from scratch — fine for

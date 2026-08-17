@@ -2,11 +2,13 @@ package dev.obelisk.core.refactor;
 
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
 import com.github.javaparser.ast.expr.Name;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
 import com.github.javaparser.resolution.MethodUsage;
 import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
@@ -370,7 +372,7 @@ public final class RenameMethodRefactor {
                     }
                     List<ResolvedType> candidateParams = resolvedCandidate.formalParameterTypes();
                     boolean overridesTarget = false;
-                    for (ResolvedReferenceType ancestor : declaringType.getAllAncestors()) {
+                    for (ResolvedReferenceType ancestor : ancestorsOf(declaringType, candidate)) {
                         if (!ancestor.getQualifiedName().equals(ownerQualifiedName)) {
                             continue;
                         }
@@ -405,6 +407,48 @@ public final class RenameMethodRefactor {
             }
         }
         return overrides;
+    }
+
+    /**
+     * Wraps {@link ResolvedReferenceTypeDeclaration#getAllAncestors()} with a
+     * fallback for local classes (a class declared as a statement inside a
+     * method body): confirmed empirically that this library's ancestor
+     * resolution -- both the transitive {@code getAllAncestors()} and the
+     * direct, non-transitive {@code getAncestors()} -- returns an empty list
+     * for a local class even when it has an explicit {@code extends}/
+     * {@code implements} clause naming a real supertype. When that happens
+     * (empty result, but the AST node genuinely declares a supertype), this
+     * resolves the {@code extends}/{@code implements} type references
+     * directly from the AST instead and unions in their own ancestors (which
+     * resolve correctly, since the supertype itself is an ordinary named
+     * type, not a local one -- only ancestor computation *starting from* a
+     * local class as the query root is affected).
+     */
+    private static List<ResolvedReferenceType> ancestorsOf(ResolvedReferenceTypeDeclaration declaringType,
+                                                             MethodDeclaration candidate) {
+        List<ResolvedReferenceType> ancestors = declaringType.getAllAncestors();
+        if (!ancestors.isEmpty()) {
+            return ancestors;
+        }
+        Optional<ClassOrInterfaceDeclaration> enclosing = candidate.findAncestor(ClassOrInterfaceDeclaration.class);
+        if (enclosing.isEmpty()) {
+            return ancestors;
+        }
+        List<ClassOrInterfaceType> supertypeRefs = new ArrayList<>();
+        supertypeRefs.addAll(enclosing.get().getExtendedTypes());
+        supertypeRefs.addAll(enclosing.get().getImplementedTypes());
+        List<ResolvedReferenceType> manual = new ArrayList<>();
+        for (ClassOrInterfaceType ref : supertypeRefs) {
+            try {
+                ResolvedReferenceType resolved = ref.resolve().asReferenceType();
+                manual.add(resolved);
+                manual.addAll(resolved.getAllAncestors());
+            } catch (RuntimeException ignored) {
+                // best-effort -- an unresolvable supertype reference just
+                // isn't included, same as the library's own behavior
+            }
+        }
+        return manual;
     }
 
     /**

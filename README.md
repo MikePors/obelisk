@@ -17,7 +17,8 @@ Two intended uses:
 
 ## Status
 
-Implemented: `rename-method`, as a CLI subcommand, against Maven projects.
+Implemented: `rename-method` and `rename-class`, as CLI subcommands, against
+Maven projects.
 
 Not yet implemented: any other refactor kind (extract-method, extract-variable,
 move, inline, ...), Gradle project support, and the MCP server itself.
@@ -100,6 +101,58 @@ resolve (and therefore left untouched).
   producing the renamed call).
 - **Unparseable source**: if any file under the project's source roots fails
   to parse, obelisk reports the file and reason and stops.
+
+### rename-class
+
+```sh
+java -jar obelisk-cli/target/obelisk.jar rename-class \
+  --project-dir /path/to/your/maven/project \
+  --class Formatter \
+  --to TextFormatter \
+  --dry-run
+```
+
+| Option          | Required | Description                                              |
+|-----------------|----------|------------------------------------------------------------|
+| `--project-dir` | no       | Path to the Maven project root (default: current directory) |
+| `--class`       | yes      | Simple name of the class/interface/enum/record/annotation to rename |
+| `--to`          | yes      | New type name                                              |
+| `--dry-run`      | no       | Print the unified diff without writing any files           |
+
+#### What it renames
+
+- the type declaration itself, plus its own constructors (and a record's
+  compact constructor, if present)
+- every type usage obelisk can resolve back to it: field/local/parameter
+  types, return types, generic type arguments, `extends`/`implements`
+  clauses, casts, `instanceof`, `new Foo()`, and `Foo::method` references
+- matching non-static and static imports (a static import of the type's own
+  member gets its qualifier rewritten too)
+- static-member qualifiers (`Foo.CONSTANT`, `Foo.staticMethod()`) where `Foo`
+  really is the renamed type, not a same-named local variable/field
+- annotation usages (`@Foo`), if the renamed type is itself an annotation
+- if the target is a top-level type whose file is named after it, the file
+  itself is renamed to match (this happens even under `--dry-run`'s
+  underlying diff output, which reports it as `Rename file: ... -> ...`
+  separately from the content diffs; the actual file move only happens
+  without `--dry-run`)
+
+#### What it refuses to do
+
+- **Ambiguous class name**: same rule as `rename-method` (top-level matches
+  win over nested types of the same simple name).
+- **Invalid or colliding `--to`**: rejects non-identifiers/keywords, and a
+  name that would collide with a sibling type -- another top-level type in
+  the same package, or another member type in the same enclosing type.
+- **Unparseable source**: same as `rename-method`.
+
+#### Known limitations specific to rename-class
+
+- A static import of the class itself as a nested member (e.g.
+  `import static Outer.Inner;`) is not renamed.
+- If the target is a top-level type but its file either isn't named after it
+  or contains more than one top-level type, the file is left as-is (with a
+  warning) rather than guessing which file to rename.
 
 ## MCP server (planned)
 

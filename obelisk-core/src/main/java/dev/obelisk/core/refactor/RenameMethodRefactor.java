@@ -67,7 +67,7 @@ public final class RenameMethodRefactor {
 
         List<String> warnings = new ArrayList<>();
 
-        TypeDeclaration<?> targetClass = findClass(ctx, className);
+        TypeDeclaration<?> targetClass = ClassFinder.findClass(ctx, className);
         MethodDeclaration targetMethod = findMethod(targetClass, oldName, paramsFilter, warnings);
         ResolvedMethodDeclaration resolvedTarget = resolveTarget(targetMethod, targetClass, oldName);
         String targetSignature = signatureOf(resolvedTarget);
@@ -206,7 +206,7 @@ public final class RenameMethodRefactor {
             writeAll(updatedContents);
         }
 
-        return new RefactorResult(apply, changedFiles, diffs, warnings);
+        return new RefactorResult(apply, changedFiles, diffs, Map.of(), warnings);
     }
 
     private static void validateIdentifier(String name) {
@@ -543,49 +543,6 @@ public final class RenameMethodRefactor {
     @SuppressWarnings("unchecked")
     private static TypeDeclaration<?> castTypeDeclaration(TypeDeclaration raw) {
         return (TypeDeclaration<?>) raw;
-    }
-
-    /**
-     * Finds the type (class, interface, enum, or record) declaring the method
-     * to rename. Types can be nested, and a common inner-type name (e.g.
-     * {@code Builder}, {@code Config}) elsewhere in the project shouldn't make
-     * an unrelated top-level class named {@code className} ambiguous -- so
-     * top-level matches take priority, and nested types are only considered
-     * if there is no top-level match.
-     */
-    private static TypeDeclaration<?> findClass(ProjectContext ctx, String className) {
-        List<TypeDeclaration<?>> allMatches = new ArrayList<>();
-        for (CompilationUnit cu : ctx.unitsByFile().values()) {
-            cu.findAll(TypeDeclaration.class).stream()
-                    .filter(t -> t.getNameAsString().equals(className))
-                    .forEach(allMatches::add);
-        }
-        if (allMatches.isEmpty()) {
-            throw new RefactorException("No class/interface/enum/record named '" + className
-                    + "' found under project source roots");
-        }
-
-        List<TypeDeclaration<?>> topLevelMatches = allMatches.stream()
-                .filter(RenameMethodRefactor::isTopLevelType)
-                .toList();
-        List<TypeDeclaration<?>> candidates = topLevelMatches.isEmpty() ? allMatches : topLevelMatches;
-
-        if (candidates.size() > 1) {
-            String locations = candidates.stream()
-                    .map(t -> t.getFullyQualifiedName().orElse(t.getNameAsString()))
-                    .distinct()
-                    .sorted()
-                    .reduce((a, b) -> a + ", " + b)
-                    .orElse("");
-            throw new RefactorException("Class name '" + className + "' is ambiguous (" + candidates.size()
-                    + " matches found: " + locations
-                    + "). Fully-qualified class disambiguation is not yet supported.");
-        }
-        return candidates.get(0);
-    }
-
-    private static boolean isTopLevelType(TypeDeclaration<?> type) {
-        return type.getParentNode().filter(p -> p instanceof CompilationUnit).isPresent();
     }
 
     /**

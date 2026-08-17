@@ -17,8 +17,8 @@ Two intended uses:
 
 ## Status
 
-Implemented: `rename-method` and `rename-class`, as CLI subcommands, against
-Maven projects.
+Implemented: `rename-method`, `rename-class`, and `rename-field`, as CLI
+subcommands, against Maven projects.
 
 Not yet implemented: any other refactor kind (extract-method, extract-variable,
 move, inline, ...), Gradle project support, and the MCP server itself.
@@ -153,6 +153,54 @@ java -jar obelisk-cli/target/obelisk.jar rename-class \
 - If the target is a top-level type but its file either isn't named after it
   or contains more than one top-level type, the file is left as-is (with a
   warning) rather than guessing which file to rename.
+
+### rename-field
+
+```sh
+java -jar obelisk-cli/target/obelisk.jar rename-field \
+  --project-dir /path/to/your/maven/project \
+  --class Widget \
+  --from count \
+  --to amount \
+  --dry-run
+```
+
+| Option          | Required | Description                                              |
+|-----------------|----------|------------------------------------------------------------|
+| `--project-dir` | no       | Path to the Maven project root (default: current directory) |
+| `--class`       | yes      | Simple name of the class/interface/enum/record declaring the field |
+| `--from`        | yes      | Current field name                                         |
+| `--to`          | yes      | New field name                                              |
+| `--dry-run`      | no       | Print the unified diff without writing any files           |
+
+#### What it renames
+
+- the field declaration itself (only that variable, if declared alongside
+  others in one statement, e.g. `private int a, b;`)
+- every read/write obelisk can resolve back to it: unqualified references,
+  `this.field`/`super.field`, and qualified access through an instance or
+  (for static fields) the class name -- including access from a subclass
+  that inherits it, whether qualified or not
+
+#### What it refuses to do
+
+- **Ambiguous class name**: same rule as `rename-method`/`rename-class`.
+- **Invalid or colliding `--to`**: rejects non-identifiers/keywords, a name
+  that would duplicate another field already declared on the same class,
+  and renaming an unqualified field reference into a name that a local
+  variable/parameter already uses in the same method/constructor/
+  initializer (which would silently shadow the field after rename).
+- **Unparseable source**: same as `rename-method`.
+
+#### Known limitations specific to rename-field
+
+- A subclass field that *hides* (fields don't override -- hiding is
+  resolved statically by declared type, not dynamically) the renamed field
+  is a distinct field and is deliberately left untouched.
+- Record components aren't fields in JavaParser's AST model (they're
+  constructor-like parameters that happen to also generate an implicit
+  field/accessor), so `rename-field` can't target one -- it fails with
+  "no field found", same as pointing at any other nonexistent field.
 
 ## MCP server (planned)
 

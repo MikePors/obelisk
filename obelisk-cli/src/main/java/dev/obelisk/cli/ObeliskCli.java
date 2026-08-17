@@ -8,7 +8,7 @@ import picocli.CommandLine.Command;
         mixinStandardHelpOptions = true,
         version = "obelisk 0.1.0",
         description = "Structural refactoring for Java projects.",
-        subcommands = {RenameMethodCommand.class, RenameClassCommand.class}
+        subcommands = {RenameMethodCommand.class, RenameClassCommand.class, RenameFieldCommand.class}
 )
 public class ObeliskCli implements Runnable {
 

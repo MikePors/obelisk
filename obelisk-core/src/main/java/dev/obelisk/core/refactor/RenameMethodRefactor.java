@@ -47,7 +47,8 @@ import java.util.Set;
  *    (top-level types take priority over nested types of the same name --
  *    see {@link #findClass})
  *  - overloaded methods with the target name must be disambiguated by the
- *    caller (not yet supported) -- refuses to guess which overload
+ *    caller via {@code paramsFilter} ({@code --params} on the CLI) -- refuses
+ *    to guess which overload if it's still ambiguous (see {@link #findMethod})
  *  - override propagation is downward only: {@code --class} must name the
  *    root declaration. If the specified method itself overrides something
  *    further up the hierarchy, obelisk refuses and names the root to target
@@ -62,21 +63,21 @@ public final class RenameMethodRefactor {
                                       String paramsFilter, boolean apply) {
         validateIdentifier(newName);
 
+        List<String> warnings = new ArrayList<>();
+
         TypeDeclaration<?> targetClass = findClass(ctx, className);
-        MethodDeclaration targetMethod = findMethod(targetClass, oldName, paramsFilter);
+        MethodDeclaration targetMethod = findMethod(targetClass, oldName, paramsFilter, warnings);
         ResolvedMethodDeclaration resolvedTarget = resolveTarget(targetMethod, targetClass, oldName);
         String targetSignature = signatureOf(resolvedTarget);
         String ownerQualifiedName = resolvedTarget.declaringType().getQualifiedName();
 
         rejectNonRootTarget(resolvedTarget, oldName, targetClass);
 
-        List<String> warnings = new ArrayList<>();
-
         // Find every declaration elsewhere in the project that overrides this
         // one, so the whole family gets renamed together instead of leaving
         // subclasses out of sync with the interface/superclass they implement.
         List<MethodDeclaration> overrides = findOverrides(ctx, ownerQualifiedName, oldName, targetMethod,
-                resolvedTarget, warnings);
+                resolvedTarget, targetSignature, warnings);
         List<MethodDeclaration> familyDeclarations = new ArrayList<>();
         familyDeclarations.add(targetMethod);
         familyDeclarations.addAll(overrides);
@@ -337,7 +338,7 @@ public final class RenameMethodRefactor {
     private static List<MethodDeclaration> findOverrides(ProjectContext ctx, String ownerQualifiedName,
                                                            String oldName, MethodDeclaration targetMethod,
                                                            ResolvedMethodDeclaration resolvedTarget,
-                                                           List<String> warnings) {
+                                                           String targetSignature, List<String> warnings) {
         List<MethodDeclaration> overrides = new ArrayList<>();
         for (Map.Entry<Path, CompilationUnit> entry : ctx.unitsByFile().entrySet()) {
             for (MethodDeclaration candidate : entry.getValue().findAll(MethodDeclaration.class)) {
@@ -374,7 +375,17 @@ public final class RenameMethodRefactor {
                             continue;
                         }
                         for (MethodUsage ancestorMethod : ancestor.getDeclaredMethods()) {
+                            // getDeclaredMethods() returns every method named
+                            // oldName on the ancestor -- if the root class has
+                            // multiple overloads (--params picked one of them),
+                            // this must also confirm ancestorMethod IS the
+                            // specific overload we're renaming (resolvedTarget),
+                            // not just any same-named one the candidate happens
+                            // to match. Without this check, renaming ONE
+                            // overload would sweep in a subclass's override of a
+                            // completely different, unselected overload.
                             if (ancestorMethod.getName().equals(oldName)
+                                    && ancestorMethod.getDeclaration().getQualifiedSignature().equals(targetSignature)
                                     && overrideParamsMatch(ancestor, ancestorMethod, candidateParams)) {
                                 overridesTarget = true;
                                 break;
@@ -541,7 +552,7 @@ public final class RenameMethodRefactor {
      * is only acceptable when there's exactly one method with that name.
      */
     private static MethodDeclaration findMethod(TypeDeclaration<?> targetClass, String methodName,
-                                                  String paramsFilter) {
+                                                  String paramsFilter, List<String> warnings) {
         List<MethodDeclaration> matches = targetClass.getMethods().stream()
                 .filter(m -> m.getNameAsString().equals(methodName))
                 .toList();
@@ -550,7 +561,24 @@ public final class RenameMethodRefactor {
                     "No method named '" + methodName + "' declared directly on '" + targetClass.getNameAsString() + "'");
         }
         if (matches.size() == 1) {
-            return matches.get(0);
+            MethodDeclaration only = matches.get(0);
+            if (paramsFilter != null) {
+                // Not ambiguous, so --params isn't needed to pick a method --
+                // but still worth validating: a mismatched value here is most
+                // likely a typo or a stale copy-paste, and the caller should
+                // know it had no effect rather than being renamed silently.
+                List<String> wanted = parseParamsFilter(paramsFilter);
+                try {
+                    if (!paramsFilterMatches(only.resolve().formalParameterTypes(), wanted)) {
+                        warnings.add("--params '" + paramsFilter + "' does not match the only '" + methodName
+                                + "' method on '" + targetClass.getNameAsString()
+                                + "' -- proceeding anyway since the name isn't ambiguous.");
+                    }
+                } catch (RuntimeException ignored) {
+                    // Couldn't resolve it to verify -- not fatal, the method itself was found fine.
+                }
+            }
+            return only;
         }
         if (paramsFilter == null) {
             throw new RefactorException("Method name '" + methodName + "' is overloaded (" + matches.size()
@@ -566,7 +594,9 @@ public final class RenameMethodRefactor {
                     filtered.add(candidate);
                 }
             } catch (RuntimeException e) {
-                // unresolvable overload can't be matched by --params; skip it
+                warnings.add("Could not resolve overload '" + candidate.getNameAsString() + "' on '"
+                        + targetClass.getNameAsString() + "' while matching --params (skipped -- it may have "
+                        + "been the intended match): " + e.getMessage());
             }
         }
         if (filtered.isEmpty()) {
@@ -582,38 +612,83 @@ public final class RenameMethodRefactor {
         return filtered.get(0);
     }
 
+    /**
+     * Splits a {@code --params} value on commas. A blank/empty overall value
+     * means "zero-arg overload". Anything else with an empty segment (a
+     * leading/trailing/doubled comma, e.g. {@code ","} or {@code "int,"}) is
+     * rejected outright rather than silently misinterpreted -- {@code ","}
+     * previously fell through {@code String.split} dropping trailing empty
+     * strings and was misread as the zero-arg selector.
+     */
     private static List<String> parseParamsFilter(String paramsFilter) {
         if (paramsFilter.isBlank()) {
             return List.of();
         }
         List<String> tokens = new ArrayList<>();
-        for (String token : paramsFilter.split(",")) {
-            tokens.add(token.trim());
+        for (String token : paramsFilter.split(",", -1)) {
+            String trimmed = token.trim();
+            if (trimmed.isEmpty()) {
+                throw new RefactorException("Invalid --params '" + paramsFilter
+                        + "': empty parameter type (use --params \"\" for a zero-arg overload, "
+                        + "not a leading/trailing/doubled comma).");
+            }
+            tokens.add(trimmed);
         }
         return tokens;
     }
 
-    /** Matches each wanted token against a parameter's simple OR fully-qualified type name. */
+    /**
+     * Matches each wanted token against a parameter's fully-qualified type
+     * name, or its simple name with any generic type arguments stripped off
+     * first (so {@code List} matches {@code java.util.List<java.lang.String>}
+     * -- naively taking everything after the last '.' without stripping
+     * generics first would land inside the type argument instead, e.g.
+     * yielding {@code String>} for that same type).
+     */
     private static boolean paramsFilterMatches(List<ResolvedType> candidateParams, List<String> wanted) {
         if (candidateParams.size() != wanted.size()) {
             return false;
         }
         for (int i = 0; i < wanted.size(); i++) {
             String describe = candidateParams.get(i).describe();
-            String simple = describe.substring(describe.lastIndexOf('.') + 1);
-            if (!wanted.get(i).equals(describe) && !wanted.get(i).equals(simple)) {
+            String base = baseTypeName(describe);
+            String simple = simpleNameOf(base);
+            String token = wanted.get(i);
+            if (!token.equals(describe) && !token.equals(base) && !token.equals(simple)) {
                 return false;
             }
         }
         return true;
     }
 
+    /** Strips any generic type arguments, e.g. {@code "java.util.List<java.lang.String>"} -> {@code "java.util.List"}. */
+    private static String baseTypeName(String describe) {
+        int genericStart = describe.indexOf('<');
+        return genericStart < 0 ? describe : describe.substring(0, genericStart);
+    }
+
+    private static String simpleNameOf(String qualifiedName) {
+        int lastDot = qualifiedName.lastIndexOf('.');
+        return lastDot < 0 ? qualifiedName : qualifiedName.substring(lastDot + 1);
+    }
+
+    /**
+     * Lists each candidate's signature using the exact same parameter-type
+     * strings {@link #paramsFilterMatches} compares against (each resolved
+     * parameter's {@code describe()}), so a value copied from this message is
+     * guaranteed to match -- {@code getQualifiedSignature()} was used
+     * previously, but it renders varargs as {@code String...} while the
+     * matcher only ever sees (and accepts) {@code String[]}.
+     */
     private static String describeOverloads(List<MethodDeclaration> methods, String methodName) {
         List<String> descriptions = new ArrayList<>();
         for (MethodDeclaration m : methods) {
             try {
-                String sig = signatureOf(m.resolve());
-                descriptions.add(methodName + sig.substring(sig.indexOf('(')));
+                List<String> paramDescriptions = new ArrayList<>();
+                for (ResolvedType paramType : m.resolve().formalParameterTypes()) {
+                    paramDescriptions.add(paramType.describe());
+                }
+                descriptions.add(methodName + "(" + String.join(", ", paramDescriptions) + ")");
             } catch (RuntimeException e) {
                 descriptions.add(methodName + "(<unresolvable>)");
             }

@@ -86,6 +86,27 @@ class NameCaptureTest {
                     .hasMessageContaining("already means");
         }
 
+
+        @Test
+        @DisplayName("an enum CONSTANT shares a name space with fields")
+        void refusesCollisionWithEnumConstant() {
+            TestProject p = project()
+                    .add("com/example/Color.java", """
+                            package com.example;
+                            public enum Color {
+                                RED, GREEN;
+                                private int shade = 3;
+                                public int shade() { return shade; }
+                            }
+                            """);
+
+            // Before the fix this emitted `private int RED = 3;`, which
+            // does not compile.
+            assertThat(p.expectRefused(ctx ->
+                    RenameFieldRefactor.run(ctx, "Color", "shade", "RED", true)))
+                    .hasMessageContaining("enum constant");
+        }
+
         @Test
         @DisplayName("an ordinary rename with no existing binding must stay allowed")
         void allowsRenameWithNoCapture() {

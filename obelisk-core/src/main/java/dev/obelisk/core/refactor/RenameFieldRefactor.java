@@ -308,6 +308,22 @@ public final class RenameFieldRefactor {
                 }
             }
         }
+        // An enum's CONSTANTS occupy the same name space as its fields but
+        // are a different AST node type (EnumConstantDeclaration, not
+        // FieldDeclaration), so the loop above cannot see them -- the same
+        // enum-constant blind spot that inline-method's side-effect check
+        // had. Confirmed by repro: renaming a field on `enum Color { RED,
+        // GREEN; private int shade; }` to `RED` was accepted and emitted
+        // `private int RED = 3;`, which does not compile.
+        if (targetClass instanceof com.github.javaparser.ast.body.EnumDeclaration enumDecl) {
+            for (var constant : enumDecl.getEntries()) {
+                if (constant.getNameAsString().equals(newName)) {
+                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+                            + targetClass.getNameAsString() + "' already declares an enum constant named '"
+                            + newName + "', which shares a name space with its fields.");
+                }
+            }
+        }
     }
 
     /**

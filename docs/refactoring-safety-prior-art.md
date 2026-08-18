@@ -321,9 +321,37 @@ Two notes on polarity and precision, both deliberate:
   15.12.2 overload resolution properly would mean reimplementing it.
   Over-refusal is the direction this codebase always chooses.
 
-Still outstanding: the four extract-variable findings that are *not* name
-capture — hoisting out of a class body (a per-instance initializer becoming
-evaluate-once), hoisting out of a try-with-resources header (escaping the
-`try`), `var` inference breaking poly expressions and assignment conversions
-(`new ArrayList<>()`, `byte b = 5`), and compound assignment reordering
-(`x += f()`). Plus rename-field's duplicate check ignoring enum constants.
+### 7.1 The remaining five
+
+The other five findings were not name capture and each needed its own fix.
+Four are extract-variable, which is unusually exposed because it does two
+risky things at once: it moves an expression's evaluation EARLIER, and it
+gives the expression a standalone `var` type in place of whatever the
+context was supplying.
+
+- **Hoisting out of a class body.** `findAncestor(Statement.class)` walks
+  straight past a local or anonymous class, because a field initializer
+  inside one has no enclosing statement of its own. A per-instance
+  initializer silently became evaluate-once.
+- **Hoisting out of a try-with-resources header.** The anchor is the
+  `TryStmt` itself, so the new declaration lands *before* the `try`, outside
+  its own catch/finally. The repro went from catching cleanly to crashing.
+- **`var` losing a context-supplied type.** `rejectUnsuitableInitializer`
+  enumerated node kinds (`null`, lambda, method reference) as a stand-in for
+  "this expression's standalone type equals its type in context" (JLS 15.2,
+  5.2) — the recurring syntactic-proxy mistake again. Now: a diamond is
+  refused outright (the resolver reports the *target-typed* answer, so
+  comparing types cannot reveal the mismatch), and where the expected type
+  *is* determinable, it must be assignable from the expression's own type.
+- **Compound assignment reordering.** `x += f()` reads `x` before evaluating
+  the right-hand side, so hoisting anything out of the RHS moves it before
+  that read. The class doc had framed this hazard as needing "multiple
+  arguments both hav[ing] side effects, which is already fairly unusual
+  code"; `x += f()` is not unusual.
+
+The fifth: rename-field's duplicate check only looked at `FieldDeclaration`,
+missing `EnumConstantDeclaration` — the same enum-constant blind spot found
+twice before in inline-method. Enum constants share a name space with
+fields.
+
+All twelve findings are now closed, with a test each.

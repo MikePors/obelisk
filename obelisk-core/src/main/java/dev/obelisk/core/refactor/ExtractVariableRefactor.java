@@ -25,6 +25,7 @@ import com.github.javaparser.ast.stmt.DoStmt;
 import com.github.javaparser.ast.stmt.ForStmt;
 import com.github.javaparser.ast.stmt.Statement;
 import com.github.javaparser.ast.stmt.WhileStmt;
+import com.github.javaparser.resolution.types.ResolvedType;
 import dev.obelisk.core.DiffUtil;
 import dev.obelisk.core.ProjectContext;
 import dev.obelisk.core.RefactorException;
@@ -136,7 +137,11 @@ public final class ExtractVariableRefactor {
         rejectAssertPosition(anchorStatement);
         rejectForwardReference(target, anchorStatement);
         rejectLvaluePosition(target);
+        rejectCompoundAssignmentReordering(target, anchorStatement);
+        rejectHoistAcrossTypeBoundary(target, anchorStatement);
+        rejectHoistOutOfResourceSpecification(target, anchorStatement);
         rejectUnsuitableInitializer(target);
+        rejectTargetTypedInitializer(target);
 
         // An expression-bodied lambda (`() -> a + b`, no braces) is
         // normalized by JavaParser into an implicit ExpressionStmt wrapping
@@ -277,6 +282,168 @@ public final class ExtractVariableRefactor {
             }
             current = parent;
         }
+    }
+
+    /**
+     * Refuses to hoist out of the right-hand side of a COMPOUND assignment
+     * ({@code +=}, {@code |=}, ...).
+     *
+     * <p>{@link #rejectLvaluePosition} covers the target BEING the
+     * assignment target, but a compound assignment also READS its target
+     * before evaluating the right-hand side, so hoisting anything out of the
+     * RHS moves that evaluation to before the read. Confirmed by repro:
+     * {@code static int x = 1; static int f() { x = 100; return 5; }} with
+     * {@code x += f();}. Extracting {@code f()} yields {@code var v = f(); x
+     * += v;} and {@code x} goes from 6 to 105, compiling cleanly.
+     *
+     * <p>The class doc previously framed this reordering hazard as only
+     * arising when "multiple arguments both have side effects, which is
+     * already fairly unusual code". {@code x += f()} is not unusual.
+     */
+    private static void rejectCompoundAssignmentReordering(Expression target, Statement anchorStatement) {
+        for (AssignExpr assign : anchorStatement.findAll(AssignExpr.class)) {
+            if (assign.getOperator() == AssignExpr.Operator.ASSIGN) {
+                continue;
+            }
+            if (isWithin(target, assign.getValue())) {
+                throw new RefactorException("Cannot extract this expression: it's inside the right-hand side of a "
+                        + "compound assignment ('" + assign.getOperator().asString() + "'), which READS its target "
+                        + "before evaluating the right-hand side -- hoisting the expression above the statement "
+                        + "would move its evaluation before that read, which can silently change the result.");
+            }
+        }
+    }
+
+    /**
+     * Refuses to hoist an expression OUT of a class body it sits inside.
+     *
+     * <p>{@code findAncestor(Statement.class)} walks straight past a local
+     * or anonymous class declaration, because a field initializer inside one
+     * has no enclosing statement of its own -- so the anchor lands outside
+     * the class entirely. Confirmed by repro: a local {@code class Counter {
+     * int v = next(); }} with {@code new Counter().v + "," + new
+     * Counter().v} printed {@code 1,2} before and {@code 1,1} after
+     * extracting {@code next()}, which was hoisted above the class
+     * declaration -- turning a per-instance initializer into a
+     * once-per-program one. Where the initializer references the class's own
+     * members, the same path produces a compile error instead.
+     */
+    private static void rejectHoistAcrossTypeBoundary(Expression target, Statement anchorStatement) {
+        Node current = target;
+        while (current != anchorStatement) {
+            Node parent = current.getParentNode().orElse(null);
+            if (parent == null) {
+                return;
+            }
+            if (parent instanceof com.github.javaparser.ast.body.TypeDeclaration
+                    || parent instanceof com.github.javaparser.ast.expr.ObjectCreationExpr creation
+                            && creation.getAnonymousClassBody().isPresent()
+                            && !isWithin(target, creation.getArguments())) {
+                throw new RefactorException("Cannot extract this expression: it's inside a local or anonymous "
+                        + "class body, and the statement it would be hoisted above sits OUTSIDE that class -- "
+                        + "moving it there changes a per-instance initializer into something evaluated once, or "
+                        + "puts it where the class's own members aren't in scope.");
+            }
+            current = parent;
+        }
+    }
+
+    private static boolean isWithin(Expression target, List<Expression> candidates) {
+        return candidates.stream().anyMatch(c -> isWithin(target, c));
+    }
+
+    /**
+     * Refuses to hoist out of a try-with-resources RESOURCE SPECIFICATION.
+     *
+     * <p>The anchor for an expression in a try's resource header is the
+     * {@code TryStmt} itself, so the new declaration lands BEFORE the
+     * {@code try} -- outside the coverage of its own {@code catch} and
+     * {@code finally}. Confirmed by repro: extracting {@code open()} from
+     * {@code try (Closeable c = open()) {...} catch (Exception e) {...}}
+     * moved the call outside, so an exception it threw stopped being caught
+     * and crashed the program instead. Compiles cleanly.
+     */
+    private static void rejectHoistOutOfResourceSpecification(Expression target, Statement anchorStatement) {
+        if (anchorStatement instanceof com.github.javaparser.ast.stmt.TryStmt tryStmt
+                && tryStmt.getResources().stream().anyMatch(resource -> isWithin(target, resource))) {
+            throw new RefactorException("Cannot extract this expression: it's part of a try-with-resources "
+                    + "resource specification, so hoisting it would move its evaluation OUTSIDE the 'try' -- any "
+                    + "exception it throws would stop being handled by this statement's own catch/finally.");
+        }
+    }
+
+    /**
+     * Refuses an expression whose type depends on the CONTEXT it sits in,
+     * because {@code var} gives it a standalone type instead.
+     *
+     * <p>{@link #rejectUnsuitableInitializer} enumerates node KINDS
+     * ({@code null}, lambda, method reference) as a stand-in for the
+     * semantic property "this expression's standalone type equals its type
+     * in context" (JLS 15.2 poly expressions, JLS 5.2 assignment
+     * conversion). Two more shapes fall through that enumeration, both
+     * confirmed by repro to break the build:
+     * <ul>
+     * <li>a DIAMOND {@code new ArrayList<>()} assigned to {@code
+     * List<String>} -- {@code var} infers {@code ArrayList<Object>}. The
+     * diamond is refused outright rather than by comparing types, because
+     * the resolver reports the target-typed answer and so cannot be trusted
+     * to reveal the mismatch.
+     * <li>an assignment context that applies a narrowing conversion --
+     * {@code byte b = 5;} extracting {@code 5} yields {@code var t = 5;} of
+     * type {@code int}, and {@code byte b = t;} is then a lossy conversion.
+     * </ul>
+     */
+    private static void rejectTargetTypedInitializer(Expression target) {
+        if (target instanceof com.github.javaparser.ast.expr.ObjectCreationExpr creation
+                && creation.getType().getTypeArguments().map(List::isEmpty).orElse(false)) {
+            throw new RefactorException("Cannot extract a diamond ('new "
+                    + creation.getType().getNameAsString() + "<>(...)'): its type arguments are inferred from the "
+                    + "context it sits in, and 'var' would infer them from the expression alone (typically as "
+                    + "'Object'), which generally won't compile in the original position.");
+        }
+        expectedTypeOf(target).ifPresent(expected -> {
+            ResolvedType actual;
+            try {
+                actual = target.calculateResolvedType();
+            } catch (RuntimeException e) {
+                return;
+            }
+            if (!expected.isAssignableBy(actual)) {
+                throw new RefactorException("Cannot extract this expression: its own type ('" + actual.describe()
+                        + "') isn't assignable to the type expected here ('" + expected.describe() + "'), which "
+                        + "means the surrounding code relies on a conversion applied in THIS position. A 'var' "
+                        + "declaration would capture the expression's own type instead, so the original position "
+                        + "would no longer compile.");
+            }
+        });
+    }
+
+    /**
+     * The type the context expects of {@code target}, where that is
+     * determinable -- currently a variable initializer or the right-hand
+     * side of a plain assignment. Empty elsewhere (an argument position, a
+     * return, ...), which simply means {@link #rejectTargetTypedInitializer}
+     * makes no claim there.
+     */
+    private static Optional<ResolvedType> expectedTypeOf(Expression target) {
+        Node parent = target.getParentNode().orElse(null);
+        try {
+            if (parent instanceof VariableDeclarator declarator && declarator.getInitializer()
+                    .map(init -> init == target).orElse(false)) {
+                if (declarator.getType().isVarType()) {
+                    return Optional.empty();
+                }
+                return Optional.of(declarator.getType().resolve());
+            }
+            if (parent instanceof AssignExpr assign
+                    && assign.getOperator() == AssignExpr.Operator.ASSIGN
+                    && assign.getValue() == target) {
+                return Optional.of(assign.getTarget().calculateResolvedType());
+            }
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+        return Optional.empty();
     }
 
     private static void rejectUnsuitableInitializer(Expression target) {

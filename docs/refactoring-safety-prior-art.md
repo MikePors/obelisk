@@ -155,20 +155,112 @@ principled version of obelisk's ad-hoc JLS 6.6.1 checks in
 
 ## 6. What we're doing about it
 
-Not adding more checks. Adding **one post-transformation verification pass**
-in the spirit of dependency preservation:
+### 6.1 First attempt, and what it got wrong
 
-> After building the substituted AST, but before writing anything to disk,
-> re-resolve the transformed region and assert that every name, type, and
-> invocation target binds to the same declaration it did before the
-> transformation.
+The initial response was to add **one post-transformation verification
+pass**: after building the substituted AST but before writing anything,
+re-resolve the transformed region and assert every name, type, and
+invocation target still binds as it did.
+
+That was a **misreading of the research**, and it is worth recording why.
+
+Dependency preservation is not "add a checker underneath your existing
+preconditions." It is a three-step *replacement* architecture:
+
+1. Perform the naive transformation.
+2. Check the tracked dependencies still hold.
+3. **Repair the ones that don't** — Schäfer and de Moor track bindings by
+   *"'locking' references to declarations and then **synthesising concrete
+   references**"* — and fail only when repair is impossible.
+
+Step 3 is where the value is. Synthesis is what turns "refuse when risky"
+into "transform, then fix it up," which *enables* refactorings rather than
+merely re-checking them.
+
+The first implementation did steps 1 and 2 and made step 3 `throw`, then
+stacked the result beneath maximally conservative preconditions that had
+already refused everything it could speak to. Under those conditions it is
+structurally guaranteed to be redundant — the checking half of an
+architecture whose payoff lives in the repair half.
+
+### 6.2 Measured, not assumed
+
+A stress test lifted the two lambda bans to find out what the verification
+pass could actually recover. Results:
+
+- **Lambda as argument** — the pass fails *closed* on every lambda, safe
+  context or not, because JavaParser cannot resolve a lambda's type in any
+  position. It refused the unsafe case and both safe cases for the same
+  degenerate reason. Zero valid cases recovered.
+- **Call as lambda body** — the pass fails *open*. A void-compatible lambda
+  body (`IntConsumer c = v -> Util.twice(v)`) has identical bindings and
+  identical types before and after; only **statement-position legality**
+  changes. The pass allowed it and the build broke.
+
+An earlier version of this document, and of the code's Javadoc, claimed the
+pass "independently caught" the poly-expression bug when that precondition
+was disabled. That was an over-claim — it was failing closed
+indiscriminately, not recognising a hazard. Corrected here for the record.
+
+### 6.3 Doing it properly: repair
+
+The concrete payoff is `rejectFreeReferences`, which is probably the single
+largest source of over-refusal — it bans a body referencing *any* field,
+constant, unqualified sibling call, or type name, which rules out most
+ordinary utility methods.
+
+Unqualified `static` field reads are the textbook repair case:
+
+```java
+static final int SCALE = 2;
+static int scaled(int x) { return SCALE * x; }   // was: refused outright
+                                                  // now: inlines as Util.SCALE * x
+```
+
+The reference is re-qualified with its declaring type on the way in, and the
+verification pass then proves the synthesised reference binds to the *exact
+same field declaration* — not to something that merely shares its name at
+the call site. That is the loop working as designed: the check is no longer
+redundant, because the precondition it used to shadow is gone.
+
+Cases that remain refusals because they are genuinely unrepairable: an
+inaccessible field (JLS 6.6.1), an *instance* field (no receiver available),
+an unqualified sibling *call* (evaluation order), `this`/`super` (receiver
+rebinding).
+
+Verified against a shadowing call site — one declaring its own `SCALE =
+1000` — which still produces the original answer after inlining, where naive
+substitution would silently have used the caller's value. Also verified for
+constants inherited from a superclass (qualified with the ancestor, not the
+subclass), interface constants, constants on nested types, and call sites in
+a different package.
+
+Two implementation traps worth recording, both instances of the same
+recurring theme — **JavaParser reports what was written, not what the JLS
+implies**:
+
+- An interface field is implicitly `public static final` (JLS 9.3), but
+  JavaParser reports `isStatic() == false` **and** `accessSpecifier() ==
+  NONE`. A first version of the check tested only the access specifier and
+  still refused the case; a direct probe was needed to find that *both*
+  implicit modifiers were missing.
+- A fully-qualified reference (`com.example.Util.SCALE`) is a chain of
+  `FieldAccessExpr` nodes whose prefixes are package/type qualifiers that
+  legitimately do not resolve as *values*. The verification pass initially
+  rejected its own repairs for this reason.
+
+### 6.4 A known over-refusal found while testing
+
+`args.length` resolves to no inspectable declaration, so the constant-
+expression check's conservative "unknown means possibly-constant" default
+classifies it as constant — meaning `Util.scaled(args.length + 3)` is
+refused as a potential constant-promotion even though `args.length` is
+plainly a runtime value. Safe direction, but a real false positive. Assigning
+to a local first (`int n = args.length + 3;`) works around it.
 
 The semantic checks that verification structurally cannot see (`<clinit>`,
-constant promotion, `synchronized`, `throws`) stay exactly as they are.
-
-This is cheap for obelisk specifically because the two-pass
-resolve-then-mutate discipline already resolves everything once against the
-original AST — the "before" half of the comparison is already in hand.
+constant promotion, statement-position legality, `synchronized`, `throws`)
+stay exactly as they are.
 
 ---
 

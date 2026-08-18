@@ -511,31 +511,60 @@ compile error, but not something this refactor can detect up front).
   is being deleted, silently leaving even one real (but unresolved) use
   behind would break the build with no easy way back.
 
-#### Post-transformation verification
+#### Repair, and post-transformation verification
 
-Every restriction above is a *precondition*: hand-derived from one specific
-hazard that somebody had to think of first. Eight rounds of independent
+Most restrictions above are *preconditions*: each hand-derived from one
+specific hazard somebody had to think of first. Eight rounds of independent
 review each found a hazard nobody had thought of -- which, per [the research
 notes](docs/refactoring-safety-prior-art.md), is the documented failure mode
 of precondition-based refactoring engines generally, not a quirk of this
 one.
 
-So `inline-method` also runs one check that is structurally different. After
-the substitution is applied, but **before anything is written to disk**, it
-re-resolves each substituted expression *in its new context* and verifies:
+The alternative that research proposes is not "add a checker underneath your
+preconditions" -- it is **transform, then repair what broke, and fail only
+when repair is impossible**. `inline-method` applies that to one case:
 
-- it still has the same type the original call expression had, and
-- every name, field access, and call inside it still binds.
+- **Repair**: an unqualified reference in the body to an accessible `static`
+  field would bind to the wrong thing (or nothing) once spliced into another
+  file, so instead of refusing it, the reference is **re-qualified** with its
+  declaring type on the way in:
 
-This doesn't need to know what might go wrong, so it stays sound against
-hazards nobody anticipated. Confirmed empirically: with the poly-expression
-precondition temporarily removed, this check independently caught the lambda
-re-targeting bug that precondition exists to prevent.
+  ```java
+  public static final int SCALE = 2;
+  public static int scaled(int x) { return SCALE * x; }
+  // inlines as: com.example.Util.SCALE * x
+  ```
 
-It is a backstop, not a replacement. It structurally *cannot* see hazards
-where the bindings are identical and only the compiler's treatment of them
-differs -- dropped class initialization, constant-expression promotion, a
-lost `synchronized` -- which is why the preconditions above stay.
+  Qualified by the field's *declaring* type, so an inherited constant points
+  where it is actually declared. Confirmed via repro that a call site
+  declaring its **own** `SCALE = 1000` still gets the right answer, where
+  naive substitution would silently have used the caller's value. Works for
+  inherited constants, interface constants, nested types, and call sites in
+  other packages. This *replaces* a refusal rather than shadowing one.
+
+  Still refused as genuinely unrepairable: a non-`public` field or one on a
+  non-public type (JLS 6.6.1 -- call sites elsewhere could not read it), an
+  *instance* field (no receiver available), an unqualified sibling *call*
+  (evaluation order), and `this`/`super` (receiver rebinding).
+- **Verify**: after substitution but **before anything is written to disk**,
+  each substituted expression is re-resolved *in its new context* and checked
+  to still have the type the original call had, with every repaired
+  reference binding to the *exact same declaration* as before -- not merely
+  to something that happens to share its name at the call site.
+
+**What the verification buys, honestly:** on its own it is near-redundant --
+layered under preconditions that already refuse anything risky, it can only
+fire where a precondition has already fired. A stress test that lifted the
+two lambda bans confirmed this: it refused exactly what the preconditions
+refused, caught nothing new, and still leaked the one genuinely unsafe case
+(a void-compatible lambda body, where bindings and types are perfectly
+preserved and only statement-position legality changes). Its real job is to
+make the *repair* above safe to trust.
+
+It structurally *cannot* see hazards where bindings are identical and only
+the compiler's treatment of them differs -- dropped class initialization,
+constant-expression promotion, statement-position legality, a lost
+`synchronized` -- which is why the preconditions stay.
 
 ## MCP server (planned)
 

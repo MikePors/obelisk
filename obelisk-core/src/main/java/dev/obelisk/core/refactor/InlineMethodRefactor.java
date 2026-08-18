@@ -154,8 +154,22 @@ import java.util.Set;
  *    argument isn't obviously side-effect-free -- covers duplicated,
  *    dropped, reordered, and conditionally/lazily (re-)evaluated arguments,
  *    any of which could silently change behavior if substituted naively
- *  - refuses a body that references anything besides its own parameters --
- *    a field or constant (by unqualified name), a sibling method called
+ *  - REPAIRS, rather than refuses, an unqualified reference to an
+ *    accessible {@code static} field: {@code return SCALE * x;} inlines as
+ *    {@code com.example.Util.SCALE * x}, re-qualified with the field's own
+ *    DECLARING type (so an inherited constant points where it's actually
+ *    declared), and {@link #verifyBindingsPreserved} then proves the
+ *    synthesised reference binds to that same field at the call site rather
+ *    than to something merely sharing its name. Confirmed via repro that a
+ *    call site declaring its OWN {@code SCALE} gets the right value anyway,
+ *    where naive substitution would silently have used the caller's. This
+ *    is the one place this refactor follows the dependency-preservation
+ *    approach properly -- transform, repair, verify -- instead of refusing;
+ *    see {@link #asRepairableStaticField} and {@code
+ *    docs/refactoring-safety-prior-art.md}
+ *  - refuses a body that references anything besides its own parameters and
+ *    those repairable static fields --
+ *    a field or constant that ISN'T repairable, a sibling method called
  *    without a qualifier, an explicit {@code this}/{@code super} reference,
  *    or any type reference at all ({@code new}, a cast, {@code instanceof},
  *    {@code .class}, a generic type argument) -- spliced into a call site
@@ -267,14 +281,10 @@ import java.util.Set;
  *    written to disk, {@link #verifyBindingsPreserved} re-resolves each
  *    substituted expression IN ITS NEW CONTEXT and checks it still has the
  *    type the original call had, and that every name/field/call inside it
- *    still binds. Unlike every restriction above -- each hand-derived from
- *    one specific hazard somebody thought of -- this one doesn't need to
- *    know what might go wrong, so it stays sound against hazards nobody
- *    anticipated. Confirmed empirically: with the poly-expression
- *    precondition temporarily removed, this check independently caught the
- *    lambda re-targeting bug it exists to prevent. See {@code
- *    docs/refactoring-safety-prior-art.md} for why the precondition-only
- *    approach kept failing and where this idea comes from.
+ *    still binds to the same declaration. This exists to GUARD THE REPAIR
+ *    step described below -- see {@link #verifyBindingsPreserved} for an
+ *    honest account of what it does and does not buy, and {@code
+ *    docs/refactoring-safety-prior-art.md} for where the idea comes from.
  */
 public final class InlineMethodRefactor {
 
@@ -427,7 +437,8 @@ public final class InlineMethodRefactor {
      * originalTypeDescribe} is the type the ORIGINAL call expression
      * resolved to, captured while the original AST is still intact.
      */
-    private record PlannedInline(MethodCallExpr call, Expression substituted, String originalTypeDescribe) {
+    private record PlannedInline(MethodCallExpr call, Expression substituted, String originalTypeDescribe,
+                                 List<String> repairedBindings) {
     }
 
     /**
@@ -446,8 +457,22 @@ public final class InlineMethodRefactor {
                                              String methodName) {
         List<NameExpr> originalNodes = returnExpr.findAll(NameExpr.class);
         List<Integer> paramIndexPerNode = new ArrayList<>();
+        // Parallel to originalNodes: the fully-qualified text a static-field
+        // reference must be REPAIRED to, or null if this node isn't one.
+        // Both lists are computed against the ORIGINAL, still-attached
+        // return expression -- the only place these names still resolve to
+        // the declaring class's own scope.
+        List<String> repairPerNode = new ArrayList<>();
+        List<String> repairedBindings = new ArrayList<>();
         for (NameExpr node : originalNodes) {
             paramIndexPerNode.add(resolveAsOwnParameter(node, targetMethod).orElse(-1));
+            String repair = asRepairableStaticField(node, targetMethod)
+                    .map(InlineMethodRefactor::repairStaticMemberReference)
+                    .orElse(null);
+            repairPerNode.add(repair);
+            if (repair != null) {
+                repairedBindings.add(repair);
+            }
         }
 
         List<Parameter> parameters = targetMethod.getParameters();
@@ -489,7 +514,7 @@ public final class InlineMethodRefactor {
         if (returnExpr instanceof NameExpr && paramIndexPerNode.size() == 1 && paramIndexPerNode.get(0) >= 0) {
             Expression argument = call.getArgument(paramIndexPerNode.get(0)).clone();
             Expression wrapped = needsParens(argument) ? new EnclosedExpr(argument) : argument;
-            return new PlannedInline(call, wrapped, originalTypeDescribe);
+            return new PlannedInline(call, wrapped, originalTypeDescribe, List.of());
         }
 
         Expression clonedReturn = returnExpr.clone();
@@ -509,6 +534,13 @@ public final class InlineMethodRefactor {
                 Expression argument = call.getArgument(paramIndex).clone();
                 Expression argumentToInsert = needsParens(argument) ? new EnclosedExpr(argument) : argument;
                 clonedNodes.get(i).replace(argumentToInsert);
+            } else if (repairPerNode.get(i) != null) {
+                // REPAIR: this name binds to a static field of the declaring
+                // class today and would rebind (or fail) at the call site, so
+                // it's replaced by its fully-qualified form, which binds to
+                // the same field from anywhere. verifyBindingsPreserved
+                // afterwards proves that's what actually happened.
+                clonedNodes.get(i).replace(reparseExpression(repairPerNode.get(i)));
             }
         }
 
@@ -527,7 +559,7 @@ public final class InlineMethodRefactor {
         Expression reparsed = reparseExpression(clonedReturn.toString());
 
         Expression substituted = needsParens(reparsed) ? new EnclosedExpr(reparsed) : reparsed;
-        return new PlannedInline(call, substituted, originalTypeDescribe);
+        return new PlannedInline(call, substituted, originalTypeDescribe, repairedBindings);
     }
 
     /**
@@ -538,36 +570,48 @@ public final class InlineMethodRefactor {
      * perform the transformation and then check that what had to be
      * preserved actually was.
      *
-     * <p>Every other {@code reject*} method in this file is a PREcondition,
-     * hand-derived from one specific hazard, and eight rounds of independent
-     * review each found a fresh hazard nobody had thought of -- which is the
-     * documented failure mode of precondition-based refactoring engines
-     * generally, not a quirk of this one. This check is structurally
-     * different: it doesn't need to know WHAT might go wrong. It asserts two
-     * invariants that must hold no matter the cause:
+     * <p>It asserts two invariants:
      * <ul>
      * <li>the substituted expression, resolved in its NEW context, has the
-     * same type the original call did -- a mismatch means the surrounding
-     * code now sees something different, whatever the reason (a re-targeted
-     * poly expression, a changed boxing/widening, a different overload)
-     * <li>every name, field access, and call inside the substituted
-     * expression still RESOLVES at all in its new location -- a failure
-     * means something no longer binds where it used to
+     * same type the original call did
+     * <li>every name, field access, and call inside it still resolves, and
+     * every REPAIRED reference (see {@link #repairStaticMemberReference})
+     * still binds to the exact same declaration it did in the original body
      * </ul>
      *
-     * <p>Given how narrow the current restriction set is (a body may only
-     * reference its own parameters, literals, and primitive operators over
-     * them), most of what this could catch is already unreachable -- the
-     * body has almost nothing left in it that COULD rebind. That's the point:
-     * it's a backstop that stays correct if those restrictions are ever
-     * loosened, and it's the one check here that isn't hostage to somebody
-     * having anticipated the specific hazard.
+     * <p><b>What this actually buys, honestly.</b> On its own, layered under
+     * preconditions that already refuse anything risky, it buys nearly
+     * nothing: it can only fire where a precondition has already fired. That
+     * was measured, not assumed -- a stress test that lifted the two lambda
+     * bans found this check refused exactly what the preconditions refused,
+     * caught nothing new, AND still leaked the one genuinely unsafe case
+     * (a void-compatible lambda body, where bindings and types are perfectly
+     * preserved and only STATEMENT-POSITION LEGALITY changes, which this is
+     * structurally blind to).
+     *
+     * <p>An earlier version of this doc claimed the check "independently
+     * caught" the poly-expression bug when that precondition was disabled.
+     * That was an over-claim: it refuses a lambda in ANY context, safe or
+     * unsafe, because JavaParser cannot resolve a lambda's type at all. It
+     * was failing closed indiscriminately, not recognising a hazard.
+     *
+     * <p>Where it DOES earn its place is as the verification half of a
+     * transform-repair-verify loop. The dependency-preservation approach
+     * this comes from (Schafer & de Moor) is not "add a checker under your
+     * preconditions" -- it is: perform the transformation, then REPAIR the
+     * dependencies that broke (by synthesising qualified references), and
+     * fail only when repair is impossible. Repair is the half that buys
+     * something, because it REPLACES a refusal instead of shadowing one.
+     * {@link #repairStaticMemberReference} is that half; this method is what
+     * makes the repair safe to trust, by proving the synthesised reference
+     * really does bind to the original declaration rather than to something
+     * that merely happens to share its name at the call site.
      *
      * <p>What it structurally CANNOT catch, and so does not replace: hazards
      * where the bindings are identical and only the compiler's treatment of
      * them differs -- {@code <clinit>} dropping, constant-expression
-     * promotion, a lost {@code synchronized}/{@code throws}. Those remain
-     * the job of the preconditions above.
+     * promotion, statement-position legality, a lost {@code synchronized}.
+     * Those remain the job of the preconditions above.
      */
     private static void verifyBindingsPreserved(List<PlannedInline> plannedInlines, String methodName) {
         for (PlannedInline plan : plannedInlines) {
@@ -592,6 +636,53 @@ public final class InlineMethodRefactor {
                         + "arithmetic, or compile outright differently. Nothing has been written.");
             }
             verifyEverythingStillResolves(plan, methodName, position);
+            verifyRepairsBindToOriginalDeclaration(plan, methodName, position);
+        }
+    }
+
+    /**
+     * Proves each REPAIRED static-field reference (see {@link
+     * #repairStaticMemberReference}) actually binds, at its new location, to
+     * the same field declaration it named in the original body -- not merely
+     * to something that happens to share a name there. This is the check
+     * that makes the repair safe to make at all, and it is the one place in
+     * this file where the post-transformation verification is doing load-
+     * bearing work rather than shadowing a precondition: the precondition
+     * that used to refuse these references outright is gone, replaced by
+     * repair-then-verify.
+     */
+    private static void verifyRepairsBindToOriginalDeclaration(PlannedInline plan, String methodName,
+                                                                 String position) {
+        for (String expected : plan.repairedBindings) {
+            FieldAccessExpr repaired = plan.substituted.findAll(FieldAccessExpr.class).stream()
+                    .filter(fa -> fa.toString().equals(expected))
+                    .findFirst()
+                    .orElseThrow(() -> new RefactorException("Refusing to inline '" + methodName + "': the "
+                            + "re-qualified reference '" + expected + "' expected at " + position + " isn't present "
+                            + "in the substituted expression ('" + plan.substituted + "') -- the repair didn't "
+                            + "survive the rewrite. Nothing has been written."));
+            String actual;
+            try {
+                var resolved = repaired.resolve();
+                if (!(resolved instanceof com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration f)) {
+                    throw new RefactorException("Refusing to inline '" + methodName + "': the re-qualified "
+                            + "reference '" + expected + "' at " + position + " no longer resolves to a field at "
+                            + "all. Nothing has been written.");
+                }
+                actual = f.declaringType().getQualifiedName() + "." + f.getName();
+            } catch (RefactorException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                throw new RefactorException("Refusing to inline '" + methodName + "': the re-qualified reference '"
+                        + expected + "' at " + position + " could not be resolved in its new context ("
+                        + e.getMessage() + ") -- the call site may not be able to see that type. Nothing has been "
+                        + "written.", e);
+            }
+            if (!actual.equals(expected)) {
+                throw new RefactorException("Refusing to inline '" + methodName + "': the re-qualified reference '"
+                        + expected + "' at " + position + " binds to '" + actual + "' there instead -- the repair "
+                        + "did not preserve the original binding. Nothing has been written.");
+            }
         }
     }
 
@@ -618,6 +709,15 @@ public final class InlineMethodRefactor {
             }
         }
         for (FieldAccessExpr fieldAccess : plan.substituted.findAll(FieldAccessExpr.class)) {
+            // A qualified type name is itself a chain of FieldAccessExprs
+            // (`com.example.Util` inside `com.example.Util.SCALE`), and the
+            // prefixes are package/type qualifiers that legitimately don't
+            // resolve as VALUES -- excused the same way a bare type-name
+            // NameExpr is. Re-qualifying a repaired reference makes these
+            // routine rather than exotic.
+            if (isPureTypeQualifier(fieldAccess)) {
+                continue;
+            }
             try {
                 fieldAccess.resolve();
             } catch (RuntimeException e) {
@@ -984,10 +1084,19 @@ public final class InlineMethodRefactor {
             if (resolveAsOwnParameter(name, targetMethod).isPresent()) {
                 continue;
             }
+            // Not a parameter -- but if it's an accessible static field, the
+            // binding is REPAIRABLE rather than fatal: it gets re-qualified
+            // with its declaring type on the way in, and the repair is then
+            // verified to bind to the same declaration (see
+            // repairStaticMemberReference / verifyBindingsPreserved).
+            if (asRepairableStaticField(name, targetMethod).isPresent()) {
+                continue;
+            }
             throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
-                    + "references '" + name + "', which isn't one of its own parameters -- inlining would resolve "
-                    + "that name against the CALL SITE's context instead of its original declaring class, which "
-                    + "isn't supported in this version.");
+                    + "references '" + name + "', which isn't one of its own parameters and isn't a public static "
+                    + "field this refactor can re-qualify -- inlining would resolve that name against the CALL "
+                    + "SITE's context instead of its original declaring class, which isn't supported in this "
+                    + "version.");
         }
         for (MethodCallExpr call : returnExpr.findAll(MethodCallExpr.class)) {
             if (call.getScope().isEmpty()) {
@@ -1024,6 +1133,88 @@ public final class InlineMethodRefactor {
         for (FieldAccessExpr fieldAccess : returnExpr.findAll(FieldAccessExpr.class)) {
             rejectInaccessibleField(fieldAccess, targetMethod);
         }
+    }
+
+    /**
+     * Is {@code name} an unqualified reference to a {@code static} field
+     * that this refactor can REPAIR by re-qualifying, rather than having to
+     * refuse outright?
+     *
+     * <p>This is the enabling half of the transform-repair-verify loop (see
+     * {@link #verifyBindingsPreserved} and {@code
+     * docs/refactoring-safety-prior-art.md}). An unqualified {@code SCALE}
+     * in the body binds to the declaring class's own field today; spliced
+     * verbatim into a call site elsewhere it would bind to whatever {@code
+     * SCALE} means THERE (silently, if an unrelated same-named field exists)
+     * or fail to compile. Rather than refuse -- which rules out most
+     * ordinary utility methods, since {@code return SCALE * x;} is a
+     * completely normal shape -- the reference is rewritten to its
+     * fully-qualified form ({@code com.example.Util.SCALE}) by {@link
+     * #repairStaticMemberReference}, which binds to the same field from
+     * anywhere it is legal at all.
+     *
+     * <p>Deliberately narrow. Requires the field to be:
+     * <ul>
+     * <li>{@code static} -- an INSTANCE field would need a receiver, and
+     * the only receiver available is the call site's own {@code this},
+     * which is exactly the rebinding hazard {@link #rejectFreeReferences}'s
+     * {@code this}/{@code super} ban exists to prevent
+     * <li>{@code public}, on a type (and enclosing types) that are also
+     * public -- same JLS 6.6.1 dual-accessibility rule as {@link
+     * #rejectInaccessibleField}, since the qualified reference has to be
+     * legal from EVERY call site, and this refactor doesn't know where
+     * those are when analysing the body
+     * </ul>
+     * A {@code private static final} constant -- probably the single most
+     * common real shape -- is therefore still refused, because call sites in
+     * other classes genuinely could not read it. Narrowing that to "refuse
+     * only if some call site is outside the declaring type" is possible but
+     * not attempted here.
+     */
+    private static Optional<com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration>
+            asRepairableStaticField(NameExpr name, MethodDeclaration targetMethod) {
+        if (resolveAsOwnParameter(name, targetMethod).isPresent()) {
+            return Optional.empty();
+        }
+        ResolvedValueDeclaration resolved;
+        try {
+            resolved = name.resolve();
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+        if (!(resolved instanceof com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration field)
+                || isTypeOrEnclosingTypeNonPublic(field.declaringType())) {
+            return Optional.empty();
+        }
+        // A field declared in an INTERFACE is implicitly public, static AND
+        // final (JLS 9.3) even with no modifiers written -- and JavaParser
+        // applies NEITHER implicit modifier: for `interface Limits { int
+        // SCALE = 2; }` it reports isStatic() == false and accessSpecifier()
+        // == NONE. Confirmed by direct probe, after a first version of this
+        // check tested only the access specifier and still refused the case.
+        // Same implicit-modifier trap that the enum-constant
+        // (ResolvedEnumConstantDeclaration) and interface-static-field
+        // cases sprang in earlier review rounds -- JavaParser consistently
+        // reports what was WRITTEN, not what the JLS implies.
+        boolean declaredInInterface = field.declaringType().isInterface();
+        if (!declaredInInterface
+                && (!field.isStatic()
+                        || field.accessSpecifier() != com.github.javaparser.ast.AccessSpecifier.PUBLIC)) {
+            return Optional.empty();
+        }
+        return Optional.of(field);
+    }
+
+    /**
+     * The fully-qualified text a repairable static field reference is
+     * rewritten to -- e.g. {@code com.example.Util.SCALE}. Qualified by the
+     * field's DECLARING type rather than the type the method happens to be
+     * on, so an inherited constant still points at where it is actually
+     * declared.
+     */
+    private static String repairStaticMemberReference(
+            com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration field) {
+        return field.declaringType().getQualifiedName() + "." + field.getName();
     }
 
     /**

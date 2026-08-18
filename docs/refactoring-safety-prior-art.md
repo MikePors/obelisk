@@ -276,3 +276,54 @@ stay exactly as they are.
 [substitution]: https://arxiv.org/pdf/2211.11550
 [jls13]: https://docs.oracle.com/javase/specs/jls/se8/html/jls-13.html
 [dcl59]: https://wiki.sei.cmu.edu/confluence/spaces/java/pages/88487460/DCL59-J.+Do+not+apply+public+final+to+constants+whose+value+might+change+in+later+releases
+
+## 7. Backfilling the four older refactors
+
+The four refactors predating `inline-method` had never had a review round.
+One was run across all of them. **None was solid** — they were
+under-examined, not simpler. Twelve findings, all reproduced and run; most
+compiled cleanly and silently changed program output.
+
+Seven of the twelve turned out to be one bug wearing different hats:
+
+> Every refactor checked the collision surface of the **old** name. None
+> checked what the **new** name already binds to at each affected site.
+
+That is a dependency-preservation problem in the exact sense of §3 — and
+unlike the first attempt at applying that idea, the fix here is not a
+redundant checker. It replaces a genuinely wrong check with a correct one.
+
+`NameBindingChecker` asks the symbol solver directly, at each site: *what
+does this name already mean here?* Three entry points — value bindings
+(locals, parameters, fields including inherited, enum constants, static
+imports), type bindings (imports, type parameters, `java.lang`,
+same-package), and visible methods (declared or inherited).
+
+Closed by it:
+
+- **rename-method** — renaming onto an applicable overload silently
+  redirecting a call to a different method body; accidental overrides in
+  both directions; an unqualified call shadowed by an *inherited* method.
+- **rename-field** — capture of an inherited field, and of a static import.
+- **rename-class** — a single-type import outranking a same-package type, so
+  the rewritten reference binds to a different class entirely; and renaming
+  onto an enclosing type parameter.
+- **extract-variable** — the introduced name shadowing a field for the rest
+  of the block.
+
+Two notes on polarity and precision, both deliberate:
+
+- **"Not solved" means "nothing binds", i.e. proceed.** This is the opposite
+  default from the constant-expression check in §6.2, and correct here: for
+  essentially every rename the new name binds to nothing anywhere, so
+  treating unknown as "might bind" would refuse every rename.
+- **Method checks match on bare NAME, not applicability.** Modelling JLS
+  15.12.2 overload resolution properly would mean reimplementing it.
+  Over-refusal is the direction this codebase always chooses.
+
+Still outstanding: the four extract-variable findings that are *not* name
+capture — hoisting out of a class body (a per-instance initializer becoming
+evaluate-once), hoisting out of a try-with-resources header (escaping the
+`try`), `var` inference breaking poly expressions and assignment conversions
+(`new ArrayList<>()`, `byte b = 5`), and compound assignment reordering
+(`x += f()`). Plus rename-field's duplicate check ignoring enum constants.

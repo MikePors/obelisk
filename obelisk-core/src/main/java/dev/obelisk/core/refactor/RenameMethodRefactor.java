@@ -95,6 +95,8 @@ public final class RenameMethodRefactor {
             member.findAncestor(TypeDeclaration.class).ifPresent(owner ->
                     rejectDuplicateSignature(castTypeDeclaration(owner), newName, paramsSuffix, oldName));
         }
+        rejectNewNameAlreadyVisible(familyDeclarations, familySignatures, oldName, newName);
+        rejectNewNameDeclaredBySubtype(ctx, ownerQualifiedName, familySignatures, oldName, newName);
 
         // Resolve every matching call site / method reference against the
         // ORIGINAL (unmodified) AST first, and defer every mutation (including
@@ -266,6 +268,32 @@ public final class RenameMethodRefactor {
         List<ResolvedType> callParams = resolvedCall.formalParameterTypes();
         Optional<TypeDeclaration<?>> ancestor = call.findAncestor(TypeDeclaration.class)
                 .map(RenameMethodRefactor::castTypeDeclaration);
+        // An INHERITED method named newName shadows the call just as surely
+        // as a declared one, and `enclosing.getMethods()` below only returns
+        // methods declared directly on the enclosing type. Confirmed by
+        // repro: a class extending a Base that declares `report(String)`,
+        // containing an unqualified statically-imported `log("x")`, silently
+        // switched from `Util.log` to `Base.report` once `log` was renamed
+        // to `report` -- Java resolves the enclosing class hierarchy before
+        // static imports. RenameFieldRefactor's equivalent check already
+        // walks ancestors; this one did not.
+        ancestor.ifPresent(enclosing -> {
+            try {
+                NameBindingChecker.visibleMethodOn(enclosing.resolve(), newName, "").ifPresent(bound -> {
+                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': "
+                            + bound + " is already visible on '" + enclosing.getNameAsString()
+                            + "', which contains an unqualified call to '" + oldName + "' at "
+                            + call.getBegin().map(Object::toString).orElse("?") + ". After the rename Java would "
+                            + "resolve that call against the enclosing class hierarchy first, silently reaching "
+                            + "the other method instead. Not supported in this version.");
+                });
+            } catch (RefactorException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                // Can't resolve the enclosing type -- fall through to the
+                // narrower declared-methods check below.
+            }
+        });
         ancestor.ifPresent(enclosing -> {
             for (MethodDeclaration candidate : enclosing.getMethods()) {
                 if (!candidate.getNameAsString().equals(newName)) {
@@ -287,6 +315,102 @@ public final class RenameMethodRefactor {
                 }
             }
         });
+    }
+
+    /**
+     * Refuses when a method named {@code newName} is ALREADY visible --
+     * declared or inherited -- on any type owning a member of the rename
+     * family.
+     *
+     * <p>{@link #rejectDuplicateSignature} only refuses an EXACT signature
+     * clash, on the stated theory that "a colliding NAME with a DIFFERENT
+     * parameter list is just a legal new overload... Java resolves it
+     * correctly by arity/type, no ambiguity." That is false, and was the
+     * most severe finding of the review: signature EQUALITY is being used as
+     * a stand-in for overload APPLICABILITY (JLS 15.12.2), the same
+     * syntactic-proxy-for-semantics mistake this codebase kept making
+     * elsewhere.
+     *
+     * <p>Confirmed by repro, and silent: {@code class A { String
+     * foo(Object o); String bar(String s); }} with a call {@code
+     * a.foo("hello")}. Renaming {@code foo} to {@code bar} rewrites the call
+     * to {@code a.bar("hello")}, which compiles and now reaches a COMPLETELY
+     * DIFFERENT method body, because {@code bar(String)} is more specific
+     * for a {@code String} argument than {@code bar(Object)}.
+     *
+     * <p>Also catches the downward half of the accidental-override hazard:
+     * renaming {@code Child.hello} to {@code greet} when {@code Base}
+     * declares {@code greet} makes it an override, so a call through a
+     * {@code Base}-typed reference silently dispatches to {@code Child}'s
+     * body instead.
+     *
+     * <p>Deliberately refuses on a bare NAME match rather than modelling
+     * applicability, which would mean reimplementing overload resolution.
+     * Over-refusal is the direction this codebase always chooses.
+     */
+    private static void rejectNewNameAlreadyVisible(List<MethodDeclaration> familyDeclarations,
+                                                      Set<String> familySignatures, String oldName, String newName) {
+        for (MethodDeclaration member : familyDeclarations) {
+            ResolvedReferenceTypeDeclaration owner;
+            try {
+                owner = member.resolve().declaringType();
+            } catch (RuntimeException e) {
+                continue;
+            }
+            for (String familySignature : familySignatures) {
+                NameBindingChecker.visibleMethodOn(owner, newName, familySignature).ifPresent(bound -> {
+                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': "
+                            + bound + " is already visible on '" + owner.getQualifiedName() + "'. Renaming would "
+                            + "either make a call site silently select that other method instead (overload "
+                            + "resolution picks the most specific applicable one, not the one you meant), or turn "
+                            + "this declaration into an accidental override of it. Not supported in this version.");
+                });
+            }
+        }
+    }
+
+    /**
+     * The upward half of the accidental-override hazard: a SUBTYPE somewhere
+     * in the project already declares {@code newName}.
+     *
+     * <p>{@link #rejectNewNameAlreadyVisible} walks each owner's ANCESTORS,
+     * which cannot see this. Confirmed by repro: {@code Base.hello()}
+     * renamed to {@code greet} while {@code Child extends Base} already
+     * declares {@code greet()}. The call {@code b.hello()} becomes {@code
+     * b.greet()} and silently dispatches to {@code Child.greet} -- Child's
+     * unrelated method became an override of Base's. Compiles cleanly.
+     */
+    private static void rejectNewNameDeclaredBySubtype(ProjectContext ctx, String ownerQualifiedName,
+                                                         Set<String> familySignatures, String oldName,
+                                                         String newName) {
+        for (CompilationUnit cu : ctx.unitsByFile().values()) {
+            for (TypeDeclaration<?> type : cu.findAll(TypeDeclaration.class)) {
+                ResolvedReferenceTypeDeclaration resolved;
+                try {
+                    resolved = type.resolve();
+                    if (resolved.getQualifiedName().equals(ownerQualifiedName)
+                            || resolved.getAllAncestors().stream()
+                                    .noneMatch(a -> a.getQualifiedName().equals(ownerQualifiedName))) {
+                        continue;
+                    }
+                    for (var declared : resolved.getDeclaredMethods()) {
+                        if (declared.getName().equals(newName)
+                                && !familySignatures.contains(declared.getQualifiedSignature())) {
+                            throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+                                    + resolved.getQualifiedName() + "' is a subtype of '" + ownerQualifiedName
+                                    + "' and already declares '" + declared.getQualifiedSignature() + "'. Renaming "
+                                    + "would silently turn that unrelated method into an override, so calls made "
+                                    + "through a supertype reference would start dispatching to it. Not supported "
+                                    + "in this version.");
+                        }
+                    }
+                } catch (RefactorException e) {
+                    throw e;
+                } catch (RuntimeException e) {
+                    // Unresolvable type -- can't be a subtype we need to worry about.
+                }
+            }
+        }
     }
 
     /**

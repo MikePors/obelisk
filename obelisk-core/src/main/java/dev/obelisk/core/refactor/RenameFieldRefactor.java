@@ -78,6 +78,7 @@ public final class RenameFieldRefactor {
         String ownerQualifiedName = resolvedField.declaringType().getQualifiedName();
 
         rejectDuplicateFieldName(targetClass, targetField, newName, oldName);
+        rejectNewNameAlreadyBound(ctx, targetField, oldName, newName);
 
         // Resolve every matching reference against the ORIGINAL (unmodified)
         // AST first, and defer every mutation to a single batch applied
@@ -265,6 +266,36 @@ public final class RenameFieldRefactor {
      * already declared directly on the same type -- Java disallows two
      * fields with the same name in one type.
      */
+    /**
+     * Refuses when {@code newName} ALREADY binds to something at the field's
+     * own declaration site -- an inherited field, a static-imported field,
+     * or an enum constant.
+     *
+     * <p>{@link #rejectDuplicateFieldName} only inspects the target class's
+     * own declared members, which misses both of those. The reference this
+     * breaks is not a reference to the field being renamed, so no check that
+     * walks the target's own use sites can see it either: giving the field
+     * the new name makes it HIDE whatever the name already meant, silently
+     * rebinding every unqualified use of that name in the class.
+     *
+     * <p>Confirmed by repro: {@code class Base { protected int count = 1; }}
+     * and {@code class Child extends Base { private int total = 10; int
+     * sum() { return count + this.total; } }}. Renaming {@code total} to
+     * {@code count} compiles cleanly, and {@code sum()} silently changes
+     * from 11 to 20 because the bare {@code count} -- which used to mean
+     * {@code Base.count} -- now resolves to the renamed field. The same
+     * happens when the shadowed binding is a static import.
+     */
+    private static void rejectNewNameAlreadyBound(ProjectContext ctx, VariableDeclarator targetField,
+                                                    String oldName, String newName) {
+        NameBindingChecker.valueBindingAt(ctx.typeSolver(), targetField, newName).ifPresent(bound -> {
+            throw new RefactorException("Cannot rename field '" + oldName + "' to '" + newName + "': that name "
+                    + "already means " + bound + " where this field is declared. Renaming would make the field "
+                    + "hide it, silently changing what every unqualified '" + newName + "' in this class refers to. "
+                    + "Not supported in this version.");
+        });
+    }
+
     private static void rejectDuplicateFieldName(TypeDeclaration<?> targetClass, VariableDeclarator targetField,
                                                    String newName, String oldName) {
         for (BodyDeclaration<?> member : targetClass.getMembers()) {

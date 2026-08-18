@@ -162,7 +162,7 @@ public final class ExtractVariableRefactor {
         }
 
         rejectNonValueExpression(target);
-        rejectNameCollision(target, name);
+        rejectNameCollision(ctx, target, name);
 
         Position anchorBegin = anchorStatement.getBegin()
                 .orElseThrow(() -> new RefactorException("Internal error: enclosing statement has no position"));
@@ -470,11 +470,26 @@ public final class ExtractVariableRefactor {
      * with no collision reported). A plain lambda doesn't have this gap on
      * its own since {@link LambdaExpr} isn't a {@link CallableDeclaration}
      * -- but the same broadened walk is used uniformly rather than trying to
-     * special-case which boundary actually needed it. A same-named field is
-     * deliberately left unchecked (a local shadowing a field is legal Java,
-     * just ordinary shadowing, not a compile error).
+     * special-case which boundary actually needed it.
+     *
+     * <p>Also refuses when the name already binds to a FIELD (declared,
+     * inherited, or static-imported) at the extraction point. An earlier
+     * version deliberately allowed this, reasoning that "a local shadowing a
+     * field is legal Java, just ordinary shadowing, not a compile error" --
+     * but legal is not the same as meaning-preserving. The new local shadows
+     * the field for the WHOLE REST OF THE BLOCK, so every later unqualified
+     * use of that name silently changes what it refers to. Confirmed by
+     * repro with {@code static int limit = 5;}: extracting {@code
+     * compute(3)} as {@code --name limit} left a trailing {@code
+     * println("limit=" + limit)} printing 6 instead of 5, with a clean
+     * compile.
      */
-    private static void rejectNameCollision(Expression target, String name) {
+    private static void rejectNameCollision(ProjectContext ctx, Expression target, String name) {
+        NameBindingChecker.valueBindingAt(ctx.typeSolver(), target, name).ifPresent(bound -> {
+            throw new RefactorException("Cannot introduce a variable named '" + name + "': that name already "
+                    + "means " + bound + " here. The new variable would shadow it for the rest of the enclosing "
+                    + "block, silently changing what every later unqualified '" + name + "' refers to.");
+        });
         for (Node scopeRoot : allEnclosingScopeRoots(target)) {
             boolean collides = scopeRoot.findAll(VariableDeclarator.class).stream()
                     .anyMatch(vd -> vd.getNameAsString().equals(name))

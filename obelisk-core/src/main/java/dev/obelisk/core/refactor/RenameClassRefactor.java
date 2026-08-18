@@ -176,6 +176,9 @@ public final class RenameClassRefactor {
             }
         }
 
+        rejectNewNameAlreadyBoundAtReference(ctx, targetClass, className, newName, typesToRename,
+                annotationsToRename, staticQualifiersToRename);
+
         Map<Path, String> originalContents = new LinkedHashMap<>();
         originalContents.computeIfAbsent(fileOf(ctx, targetClass.findCompilationUnit().orElseThrow()),
                 RenameClassRefactor::readOriginal);
@@ -290,6 +293,48 @@ public final class RenameClassRefactor {
      * declared one-per-file), or two member types with the same simple name
      * in one enclosing type.
      */
+    /**
+     * Refuses when {@code newName} ALREADY names a type at some site that
+     * references the class being renamed.
+     *
+     * <p>{@link #rejectDuplicateTypeName} only looks for a SIBLING
+     * declaration (same package, or same enclosing type). That misses every
+     * way a simple name can already be taken at a REFERENCE site, which is
+     * scope-sensitive and differs file by file: a single-type import, an
+     * enclosing type parameter, a {@code java.lang} type, or an on-demand
+     * import.
+     *
+     * <p>Confirmed by repro, and silent: {@code p.Gadget} and {@code
+     * q.Widget} both exist, and {@code p.Client} imports {@code q.Widget}
+     * while calling both. Renaming {@code p.Gadget} to {@code Widget}
+     * succeeds -- there is no sibling {@code Widget} in {@code p} -- and the
+     * rewritten {@code Widget.tag()} now binds to {@code q.Widget}, because
+     * a single-type import outranks a same-package type. Both calls end up
+     * at the same class and the file still compiles. A second repro,
+     * renaming onto an enclosing type parameter {@code T}, breaks the build
+     * instead.
+     */
+    private static void rejectNewNameAlreadyBoundAtReference(ProjectContext ctx, TypeDeclaration<?> targetClass,
+                                                               String className, String newName,
+                                                               List<ClassOrInterfaceType> typesToRename,
+                                                               List<AnnotationExpr> annotationsToRename,
+                                                               List<SimpleName> staticQualifiersToRename) {
+        List<Node> sites = new ArrayList<>();
+        sites.add(targetClass);
+        sites.addAll(typesToRename);
+        sites.addAll(annotationsToRename);
+        sites.addAll(staticQualifiersToRename);
+        for (Node site : sites) {
+            NameBindingChecker.typeBindingAt(ctx.typeSolver(), site, newName).ifPresent(bound -> {
+                throw new RefactorException("Cannot rename '" + className + "' to '" + newName + "': that name "
+                        + "already means " + bound + " at a place that references '" + className + "' ("
+                        + fileOf(ctx, site.findCompilationUnit().orElseThrow()) + "). Renaming would silently "
+                        + "rebind that reference to the wrong type, or fail to compile. Not supported in this "
+                        + "version.");
+            });
+        }
+    }
+
     private static void rejectDuplicateTypeName(ProjectContext ctx, TypeDeclaration<?> targetClass, String newName) {
         if (targetClass.getNameAsString().equals(newName)) {
             throw new RefactorException("'" + newName + "' is already the name of '"

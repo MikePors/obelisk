@@ -511,6 +511,32 @@ compile error, but not something this refactor can detect up front).
   is being deleted, silently leaving even one real (but unresolved) use
   behind would break the build with no easy way back.
 
+#### Post-transformation verification
+
+Every restriction above is a *precondition*: hand-derived from one specific
+hazard that somebody had to think of first. Eight rounds of independent
+review each found a hazard nobody had thought of -- which, per [the research
+notes](docs/refactoring-safety-prior-art.md), is the documented failure mode
+of precondition-based refactoring engines generally, not a quirk of this
+one.
+
+So `inline-method` also runs one check that is structurally different. After
+the substitution is applied, but **before anything is written to disk**, it
+re-resolves each substituted expression *in its new context* and verifies:
+
+- it still has the same type the original call expression had, and
+- every name, field access, and call inside it still binds.
+
+This doesn't need to know what might go wrong, so it stays sound against
+hazards nobody anticipated. Confirmed empirically: with the poly-expression
+precondition temporarily removed, this check independently caught the lambda
+re-targeting bug that precondition exists to prevent.
+
+It is a backstop, not a replacement. It structurally *cannot* see hazards
+where the bindings are identical and only the compiler's treatment of them
+differs -- dropped class initialization, constant-expression promotion, a
+lost `synchronized` -- which is why the preconditions above stay.
+
 ## MCP server (planned)
 
 Not built yet. The intended design: each refactor kind becomes its own MCP

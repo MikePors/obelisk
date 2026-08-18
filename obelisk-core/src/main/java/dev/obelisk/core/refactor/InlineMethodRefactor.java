@@ -263,6 +263,18 @@ import java.util.Set;
  *  - a static import of the method is only removed if no OTHER overload of
  *    the same name remains on the declaring class (a single-type static
  *    import covers every overload of that name)
+ *  - FINALLY, after the substitution is applied but before anything is
+ *    written to disk, {@link #verifyBindingsPreserved} re-resolves each
+ *    substituted expression IN ITS NEW CONTEXT and checks it still has the
+ *    type the original call had, and that every name/field/call inside it
+ *    still binds. Unlike every restriction above -- each hand-derived from
+ *    one specific hazard somebody thought of -- this one doesn't need to
+ *    know what might go wrong, so it stays sound against hazards nobody
+ *    anticipated. Confirmed empirically: with the poly-expression
+ *    precondition temporarily removed, this check independently caught the
+ *    lambda re-targeting bug it exists to prevent. See {@code
+ *    docs/refactoring-safety-prior-art.md} for why the precondition-only
+ *    approach kept failing and where this idea comes from.
  */
 public final class InlineMethodRefactor {
 
@@ -375,6 +387,13 @@ public final class InlineMethodRefactor {
         for (PlannedInline plan : plannedInlines) {
             plan.call.replace(plan.substituted);
         }
+        // ...then, with the substituted expressions attached to the tree
+        // (and so resolvable in their NEW context) but the declaration not
+        // yet removed, verify the transformation preserved what it should.
+        // Deliberately runs BEFORE any file is written, so a failure here
+        // still leaves the project on disk untouched.
+        verifyBindingsPreserved(plannedInlines, methodName);
+
         for (ImportDeclaration imp : staticImportsToRemove) {
             imp.remove();
         }
@@ -402,7 +421,13 @@ public final class InlineMethodRefactor {
         return new RefactorResult(apply, changedFiles, diffs, Map.of(), warnings);
     }
 
-    private record PlannedInline(MethodCallExpr call, Expression substituted) {
+    /**
+     * One call site's planned replacement, plus the pre-transformation fact
+     * {@link #verifyBindingsPreserved} checks survived: {@code
+     * originalTypeDescribe} is the type the ORIGINAL call expression
+     * resolved to, captured while the original AST is still intact.
+     */
+    private record PlannedInline(MethodCallExpr call, Expression substituted, String originalTypeDescribe) {
     }
 
     /**
@@ -434,6 +459,18 @@ public final class InlineMethodRefactor {
 
         rejectUnsafeArgumentSubstitution(call, returnExpr, parameters, paramIndexPerNode, methodName);
 
+        // Captured HERE, against the original untouched AST, because it's
+        // the "before" half of verifyBindingsPreserved's comparison -- once
+        // the call node is replaced there is nothing left to ask.
+        String originalTypeDescribe;
+        try {
+            originalTypeDescribe = call.calculateResolvedType().describe();
+        } catch (RuntimeException e) {
+            throw new RefactorException("Could not determine the type of the call to '" + methodName + "' at "
+                    + call.getBegin().map(Object::toString).orElse("?") + ", which is needed to verify the inlined "
+                    + "expression keeps that same type: " + e.getMessage(), e);
+        }
+
         // A return expression that IS (not merely contains) one of the
         // method's own parameters -- e.g. `private int id(int x) { return
         // x; }` -- is itself the single element of `originalNodes`, with NO
@@ -452,7 +489,7 @@ public final class InlineMethodRefactor {
         if (returnExpr instanceof NameExpr && paramIndexPerNode.size() == 1 && paramIndexPerNode.get(0) >= 0) {
             Expression argument = call.getArgument(paramIndexPerNode.get(0)).clone();
             Expression wrapped = needsParens(argument) ? new EnclosedExpr(argument) : argument;
-            return new PlannedInline(call, wrapped);
+            return new PlannedInline(call, wrapped, originalTypeDescribe);
         }
 
         Expression clonedReturn = returnExpr.clone();
@@ -490,7 +527,116 @@ public final class InlineMethodRefactor {
         Expression reparsed = reparseExpression(clonedReturn.toString());
 
         Expression substituted = needsParens(reparsed) ? new EnclosedExpr(reparsed) : reparsed;
-        return new PlannedInline(call, substituted);
+        return new PlannedInline(call, substituted, originalTypeDescribe);
+    }
+
+    /**
+     * POST-transformation verification, in the spirit of the "dependency
+     * preservation" approach of Schafer & de Moor (see {@code
+     * docs/refactoring-safety-prior-art.md}): rather than trying to
+     * enumerate, ahead of time, every way substitution could go wrong,
+     * perform the transformation and then check that what had to be
+     * preserved actually was.
+     *
+     * <p>Every other {@code reject*} method in this file is a PREcondition,
+     * hand-derived from one specific hazard, and eight rounds of independent
+     * review each found a fresh hazard nobody had thought of -- which is the
+     * documented failure mode of precondition-based refactoring engines
+     * generally, not a quirk of this one. This check is structurally
+     * different: it doesn't need to know WHAT might go wrong. It asserts two
+     * invariants that must hold no matter the cause:
+     * <ul>
+     * <li>the substituted expression, resolved in its NEW context, has the
+     * same type the original call did -- a mismatch means the surrounding
+     * code now sees something different, whatever the reason (a re-targeted
+     * poly expression, a changed boxing/widening, a different overload)
+     * <li>every name, field access, and call inside the substituted
+     * expression still RESOLVES at all in its new location -- a failure
+     * means something no longer binds where it used to
+     * </ul>
+     *
+     * <p>Given how narrow the current restriction set is (a body may only
+     * reference its own parameters, literals, and primitive operators over
+     * them), most of what this could catch is already unreachable -- the
+     * body has almost nothing left in it that COULD rebind. That's the point:
+     * it's a backstop that stays correct if those restrictions are ever
+     * loosened, and it's the one check here that isn't hostage to somebody
+     * having anticipated the specific hazard.
+     *
+     * <p>What it structurally CANNOT catch, and so does not replace: hazards
+     * where the bindings are identical and only the compiler's treatment of
+     * them differs -- {@code <clinit>} dropping, constant-expression
+     * promotion, a lost {@code synchronized}/{@code throws}. Those remain
+     * the job of the preconditions above.
+     */
+    private static void verifyBindingsPreserved(List<PlannedInline> plannedInlines, String methodName) {
+        for (PlannedInline plan : plannedInlines) {
+            String position = plan.call.getBegin().map(Object::toString).orElse("?");
+            String actual;
+            try {
+                actual = plan.substituted.calculateResolvedType().describe();
+            } catch (RuntimeException e) {
+                throw new RefactorException("Refusing to inline '" + methodName + "': after substituting at "
+                        + position + ", the resulting expression ('" + plan.substituted + "') could no longer be "
+                        + "resolved in its new context (" + e.getMessage() + "). Nothing has been written. This is "
+                        + "a post-transformation safety check -- the substitution passed every precondition but "
+                        + "still didn't survive verification, which means some hazard this refactor doesn't know "
+                        + "to check for is in play.", e);
+            }
+            if (!actual.equals(plan.originalTypeDescribe)
+                    && !stripWildcardBound(actual).equals(stripWildcardBound(plan.originalTypeDescribe))) {
+                throw new RefactorException("Refusing to inline '" + methodName + "': the call at " + position
+                        + " had type '" + plan.originalTypeDescribe + "', but the expression replacing it ('"
+                        + plan.substituted + "') has type '" + actual + "' in that position -- the surrounding code "
+                        + "would see a different type than it did before, which can change overload selection, "
+                        + "arithmetic, or compile outright differently. Nothing has been written.");
+            }
+            verifyEverythingStillResolves(plan, methodName, position);
+        }
+    }
+
+    /**
+     * The second half of {@link #verifyBindingsPreserved}: every name-like
+     * node in the substituted expression must still resolve where it now
+     * sits. A {@link NameExpr} that's really a TYPE qualifier (e.g. the
+     * {@code Util} in {@code Util.CONST}) legitimately doesn't resolve as a
+     * value, so it's excused via the same {@link #isPureTypeQualifier} test
+     * used for call receivers.
+     */
+    private static void verifyEverythingStillResolves(PlannedInline plan, String methodName, String position) {
+        for (NameExpr name : plan.substituted.findAll(NameExpr.class)) {
+            if (isPureTypeQualifier(name)) {
+                continue;
+            }
+            try {
+                name.resolve();
+            } catch (RuntimeException e) {
+                throw new RefactorException("Refusing to inline '" + methodName + "': after substituting at "
+                        + position + ", the name '" + name + "' in the resulting expression no longer resolves in "
+                        + "its new context (" + e.getMessage() + ") -- it bound to something at its original "
+                        + "location that isn't reachable here. Nothing has been written.", e);
+            }
+        }
+        for (FieldAccessExpr fieldAccess : plan.substituted.findAll(FieldAccessExpr.class)) {
+            try {
+                fieldAccess.resolve();
+            } catch (RuntimeException e) {
+                throw new RefactorException("Refusing to inline '" + methodName + "': after substituting at "
+                        + position + ", the field access '" + fieldAccess + "' in the resulting expression no "
+                        + "longer resolves in its new context (" + e.getMessage() + "). Nothing has been written.",
+                        e);
+            }
+        }
+        for (MethodCallExpr nested : plan.substituted.findAll(MethodCallExpr.class)) {
+            try {
+                nested.resolve();
+            } catch (RuntimeException e) {
+                throw new RefactorException("Refusing to inline '" + methodName + "': after substituting at "
+                        + position + ", the call '" + nested + "' in the resulting expression no longer resolves in "
+                        + "its new context (" + e.getMessage() + ") -- it may now bind to a different method than "
+                        + "it did originally. Nothing has been written.", e);
+            }
+        }
     }
 
     /**

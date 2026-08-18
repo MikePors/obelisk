@@ -17,11 +17,11 @@ Two intended uses:
 
 ## Status
 
-Implemented: `rename-method`, `rename-class`, and `rename-field`, as CLI
-subcommands, against Maven projects.
+Implemented: `rename-method`, `rename-class`, `rename-field`, and
+`extract-variable`, as CLI subcommands, against Maven projects.
 
-Not yet implemented: any other refactor kind (extract-method, extract-variable,
-move, inline, ...), Gradle project support, and the MCP server itself.
+Not yet implemented: any other refactor kind (extract-method, move, inline,
+...), Gradle project support, and the MCP server itself.
 
 See [Known limitations](#known-limitations) below before using this on
 anything you care about.
@@ -201,6 +201,85 @@ java -jar obelisk-cli/target/obelisk.jar rename-field \
   constructor-like parameters that happen to also generate an implicit
   field/accessor), so `rename-field` can't target one -- it fails with
   "no field found", same as pointing at any other nonexistent field.
+
+### extract-variable
+
+Unlike the rename refactors, `extract-variable` addresses its target by
+exact source position rather than by name -- "extract this expression" is
+inherently about one specific occurrence in one specific file, not a
+project-wide search.
+
+```sh
+java -jar obelisk-cli/target/obelisk.jar extract-variable \
+  --project-dir /path/to/your/maven/project \
+  --file src/main/java/com/example/demo/Formatter.java \
+  --start-line 5 --start-column 28 \
+  --end-line 5 --end-column 36 \
+  --name total \
+  --dry-run
+```
+
+| Option           | Required | Description                                              |
+|------------------|----------|------------------------------------------------------------|
+| `--project-dir`  | no       | Path to the Maven project root (default: current directory) |
+| `--file`         | yes      | Path to the source file (absolute, or relative to `--project-dir`) |
+| `--start-line`, `--start-column` | yes | 1-based position of the expression's first character |
+| `--end-line`, `--end-column`     | yes | 1-based position of the expression's last character (inclusive) |
+| `--name`         | yes      | Name for the new local variable                             |
+| `--dry-run`      | no       | Print the unified diff without writing any files           |
+
+The range must EXACTLY match a single expression's boundaries (obelisk
+refuses to guess "the smallest/largest expression touching this range").
+This is precise but presumes the caller already knows the expression's
+exact position -- a natural fit for an AI coding agent that just
+read/parsed the file, less convenient for typing by hand.
+
+#### What it does
+
+Declares `var name = <expression>;` immediately before the statement
+containing the expression, and replaces that one occurrence with a
+reference to `name`.
+
+#### What it refuses to do
+
+- **Only one occurrence, ever**: never replaces "every identical occurrence
+  in the block" -- deciding that's safe in general requires data-flow
+  analysis (did anything the expression depends on change between
+  occurrences?) this tool doesn't attempt.
+- **Braceless bodies**: the containing statement must be a direct child of
+  a `{ }` block (add braces around a braceless `if`/`while`/`for` body
+  first) and must be the first thing on its own source line (so its
+  indentation can be copied verbatim rather than guessed).
+- **Unsuitable `var` initializers**: refuses to extract a bare `null`
+  literal, a lambda, or a bare method reference -- none of those are legal
+  on their own as a `var` initializer.
+- **Semantics-changing hoists**: refuses to extract from the right-hand
+  side of a short-circuit `&&`/`||` (may not currently evaluate at all),
+  either branch of a ternary (evaluates conditionally), the body of an
+  expression-bodied lambda (evaluation is deferred to invocation time), a
+  `for`/`while`/`do-while` loop's own condition or update expression
+  (re-evaluated every iteration, not just once), or an `assert`'s
+  condition/message (conditional on failure, and on assertions being
+  enabled at all -- disabled by default on the JVM) -- in each case,
+  hoisting the evaluation earlier would change behavior.
+- **Forward references**: refuses to extract an expression that references
+  a name declared elsewhere in the same statement (a `for`-loop's own init
+  variable, or an earlier declarator in a multi-variable declaration) --
+  hoisting it would place the reference before its own declaration.
+- **Write targets**: refuses to extract an expression that IS the
+  left-hand side of an assignment or the operand of `++`/`--` -- would
+  silently turn the write into a no-op.
+- **Non-value expressions**: refuses an annotation, a whole variable
+  declaration, or any expression whose type is `void`.
+- **Invalid or colliding `--name`**: rejects non-identifiers/keywords and a
+  name that collides with an existing local variable or parameter already
+  in scope (checked across every enclosing method/constructor/
+  initializer/lambda, not just the nearest one).
+- **Argument evaluation order**: not refused, just worth knowing --
+  extracting one argument out of several in a call whose OTHER arguments
+  also have side effects changes their relative evaluation order (only
+  relevant when multiple arguments both have side effects, already
+  unusual code).
 
 ## MCP server (planned)
 

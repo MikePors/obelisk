@@ -42,6 +42,43 @@ mvn clean package
 
 This produces a runnable shaded jar at `obelisk-cli/target/obelisk.jar`.
 
+## Tests
+
+```sh
+mvn test
+```
+
+The whole suite runs in about three seconds. Tests build throwaway Java
+projects on disk and run the real refactors against them end to end, rather
+than asserting on hand-built ASTs.
+
+Two things make it worth more than the test count suggests:
+
+- **Fixtures deliberately have no `pom.xml`.** `ClasspathResolver` returns an
+  empty classpath when there isn't one, so no `mvn` subprocess runs and
+  nothing touches the network or the local repository. JDK types still
+  resolve through the `ReflectionTypeSolver`.
+- **`assertCompiles()` runs the real `javac` in-process.** Across eight
+  rounds of review, "does the refactored project still compile" was by far
+  the most effective oracle, because this tool's characteristic failure is
+  output that looks syntactically plausible but isn't legal Java.
+
+Most tests are *refusal* cases: each encodes a specific hazard that was found
+to make a refactor emit code that either fails to compile or — worse —
+compiles cleanly and silently behaves differently. They are grouped by hazard
+category (class initialization, constant promotion, implicit conversions,
+argument evaluation, free references, statement position, method shape,
+repair) rather than by the review round that found them.
+
+The tests that *allow* an inline matter just as much. Eight rounds of
+tightening restrictions carry a standing risk of over-refusal, so several
+tests pin down cases that are genuinely safe and must stay allowed.
+
+The suite was validated by mutation: deliberately reintroducing three
+previously-fixed bugs (removing the ancestor `<clinit>` walk, making repair
+stop qualifying, restoring the round-7 constant-check bug) caused exactly the
+tests covering those hazards to fail, and no others.
+
 ## CLI usage
 
 ```sh

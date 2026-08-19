@@ -1,5 +1,6 @@
 package dev.obelisk.core.refactor;
 
+import dev.obelisk.guard.Check;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import dev.obelisk.core.ProjectContext;
@@ -34,7 +35,7 @@ final class ClassFinder {
                     .forEach(allMatches::add);
         }
         if (allMatches.isEmpty()) {
-            throw new RefactorException("No class/interface/enum/record named '" + className
+            throw new RefactorException(Check.CLASS_NOT_FOUND, "No class/interface/enum/record named '" + className
                     + "' found under project source roots");
         }
 
@@ -50,7 +51,7 @@ final class ClassFinder {
                     .sorted()
                     .reduce((a, b) -> a + ", " + b)
                     .orElse("");
-            throw new RefactorException("Class name '" + className + "' is ambiguous (" + candidates.size()
+            throw new RefactorException(Check.CLASS_NAME_AMBIGUOUS, "Class name '" + className + "' is ambiguous (" + candidates.size()
                     + " matches found: " + locations
                     + "). Fully-qualified class disambiguation is not yet supported.");
         }

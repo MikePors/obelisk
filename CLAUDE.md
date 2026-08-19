@@ -112,10 +112,12 @@ methods, initializers but not returns.
   `MessageDistinctivenessTest` additionally forbids asserting a phrase that
   more than one check's message contains.
   Tests here passed for the wrong reason three times before this existed.
-  Current state: 85 of 91 refusal call sites assert an ID. The other 6 are
-  lookup/argument validation (missing class, ambiguous overload) which
-  legitimately carry no `Check` — if you add a refusal test and there is no
-  ID to assert, make sure that is the reason.
+  **Every** `RefactorException` carries a `Check` — there is no message-only
+  constructor, so skipping one is a compile error, not a judgement call. All
+  91 refusal call sites assert an ID. An earlier version exempted "lookup and
+  validation" failures by hand; that boundary was removed, because a
+  hand-drawn exemption is exactly the shortcut that has burned this codebase
+  before.
 - **`TestProject.rangeOf(file, snippet)`** locates expressions by text for
   extract-variable tests. Hand-counted columns have been wrong three times.
 - Fixtures deliberately write **no `pom.xml`** — that keeps them hermetic and

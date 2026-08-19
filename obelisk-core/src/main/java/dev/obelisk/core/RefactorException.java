@@ -2,8 +2,6 @@ package dev.obelisk.core;
 
 import dev.obelisk.guard.Check;
 
-import java.util.Optional;
-
 /**
  * Raised whenever obelisk cannot safely carry out a refactor and must fail
  * loudly.
@@ -20,21 +18,17 @@ import java.util.Optional;
  * but it is no longer the only thing standing between a test and a false
  * pass.
  *
- * <p>Absent for failures that are not a safety check refusing: IO errors,
- * resolver failures, and argument validation. Those genuinely have no check
- * identity, and inventing one would be worse than admitting it.
+ * <p>There is deliberately NO message-only constructor. An earlier version
+ * had one, on the reasoning that IO errors, resolver failures and argument
+ * validation are not "safety checks refusing" and so have no identity --
+ * but that is a hand-drawn boundary of exactly the kind this codebase keeps
+ * getting wrong, and it left a category in which a test could not pin down
+ * what had failed. Every failure now names itself, and the compiler
+ * enforces it.
  */
 public class RefactorException extends RuntimeException {
 
     private final transient Check check;
-
-    public RefactorException(String message) {
-        this(null, message, null);
-    }
-
-    public RefactorException(String message, Throwable cause) {
-        this(null, message, cause);
-    }
 
     public RefactorException(Check check, String message) {
         this(check, message, null);
@@ -42,11 +36,11 @@ public class RefactorException extends RuntimeException {
 
     public RefactorException(Check check, String message, Throwable cause) {
         super(message, cause);
-        this.check = check;
+        this.check = java.util.Objects.requireNonNull(check, "every RefactorException must name its Check");
     }
 
-    /** The check that refused, or empty when this is not a check failure. */
-    public Optional<Check> check() {
-        return Optional.ofNullable(check);
+    /** The check that refused. Never empty -- every failure carries one. */
+    public Check check() {
+        return check;
     }
 }

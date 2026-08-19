@@ -1,5 +1,6 @@
 package dev.obelisk.core;
 
+import dev.obelisk.guard.Check;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParseResult;
 import com.github.javaparser.ParserConfiguration;
@@ -60,7 +61,7 @@ public final class ProjectContext implements AutoCloseable {
     public static ProjectContext load(Path projectDir) {
         List<Path> sourceRoots = discoverSourceRoots(projectDir);
         if (sourceRoots.isEmpty()) {
-            throw new RefactorException(
+            throw new RefactorException(Check.NO_SOURCE_ROOTS, 
                     "No source roots found under " + projectDir + " (expected src/main/java and/or src/test/java)");
         }
 
@@ -129,7 +130,7 @@ public final class ProjectContext implements AutoCloseable {
                     classLoaders.add(classLoader);
                     typeSolver.add(new ClassLoaderTypeSolver(classLoader));
                 } catch (MalformedURLException e) {
-                    throw new RefactorException("Failed to load classpath directory: " + entry, e);
+                    throw new RefactorException(Check.CLASSPATH_DIRECTORY_UNREADABLE, "Failed to load classpath directory: " + entry, e);
                 }
             }
         }
@@ -151,7 +152,7 @@ public final class ProjectContext implements AutoCloseable {
                     throw new UncheckedIOException(e);
                 }
                 if (!parseResult.isSuccessful() || parseResult.getResult().isEmpty()) {
-                    throw new RefactorException(
+                    throw new RefactorException(Check.SOURCE_FILE_UNPARSEABLE, 
                             "Failed to parse " + javaFile + ": " + parseResult.getProblems());
                 }
                 CompilationUnit cu = parseResult.getResult().get();

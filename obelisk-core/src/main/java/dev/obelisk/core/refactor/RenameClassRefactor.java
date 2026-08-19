@@ -68,7 +68,7 @@ public final class RenameClassRefactor {
 
         TypeDeclaration<?> targetClass = ClassFinder.findClass(ctx, className);
         String targetQualifiedName = targetClass.getFullyQualifiedName()
-                .orElseThrow(() -> new RefactorException("Could not determine the fully-qualified name of '"
+                .orElseThrow(() -> new RefactorException(Check.INVALID_IDENTIFIER, "Could not determine the fully-qualified name of '"
                         + className + "'"));
 
         rejectDuplicateTypeName(ctx, targetClass, newName);
@@ -281,7 +281,7 @@ public final class RenameClassRefactor {
 
     private static void validateIdentifier(String name) {
         if (!SourceVersion.isIdentifier(name) || SourceVersion.isKeyword(name)) {
-            throw new RefactorException("'" + name + "' is not a valid Java type name");
+            throw new RefactorException(Check.INVALID_IDENTIFIER, "'" + name + "' is not a valid Java type name");
         }
     }
 
@@ -617,7 +617,7 @@ public final class RenameClassRefactor {
                 .filter(e -> e.getValue() == cu)
                 .map(Map.Entry::getKey)
                 .findFirst()
-                .orElseThrow(() -> new RefactorException("Internal error: compilation unit has no known source file"));
+                .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR, "Internal error: compilation unit has no known source file"));
     }
 
     private static String readOriginal(Path file) {
@@ -679,7 +679,7 @@ public final class RenameClassRefactor {
                     // best-effort cleanup
                 }
             }
-            throw new RefactorException("Failed to write changes: " + e.getMessage(), e);
+            throw new RefactorException(Check.WRITE_FAILED, "Failed to write changes: " + e.getMessage(), e);
         }
     }
 }

@@ -1,6 +1,7 @@
 package dev.obelisk.core.refactor;
 
 import dev.obelisk.core.testsupport.TestProject;
+import dev.obelisk.guard.Check;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -310,7 +311,7 @@ class RefactorBehaviourTest {
                     public class Main { }
                     """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.CLASS_NOT_FOUND, ctx ->
                     RenameMethodRefactor.run(ctx, "Nope", "x", "y", null, true)))
                     .hasMessageContaining("Nope");
         }
@@ -328,7 +329,7 @@ class RefactorBehaviourTest {
                             public class Thing { public void go() { } }
                             """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.CLASS_NAME_AMBIGUOUS, ctx ->
                     RenameMethodRefactor.run(ctx, "Thing", "go", "run", null, true)))
                     .isNotNull();
         }
@@ -340,7 +341,7 @@ class RefactorBehaviourTest {
                     public class Main { }
                     """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.METHOD_NOT_FOUND, ctx ->
                     RenameMethodRefactor.run(ctx, "Main", "absent", "y", null, true)))
                     .hasMessageContaining("absent");
         }

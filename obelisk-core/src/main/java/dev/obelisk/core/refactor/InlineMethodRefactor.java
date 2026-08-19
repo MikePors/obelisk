@@ -342,7 +342,7 @@ public final class InlineMethodRefactor {
                 try {
                     resolvedRef = ref.resolve();
                 } catch (RuntimeException e) {
-                    throw new RefactorException("Could not resolve method reference '" + ref + "' in " + fileOf(ctx, cu)
+                    throw new RefactorException(Check.METHOD_REFERENCE_UNRESOLVABLE, "Could not resolve method reference '" + ref + "' in " + fileOf(ctx, cu)
                             + " while checking for uses of '" + methodName + "' -- refusing rather than risk "
                             + "deleting the method while this might still reference it: " + e.getMessage(), e);
                 }
@@ -356,7 +356,7 @@ public final class InlineMethodRefactor {
                 try {
                     resolvedCall = call.resolve();
                 } catch (RuntimeException e) {
-                    throw new RefactorException("Could not resolve call '" + call + "' in " + fileOf(ctx, cu)
+                    throw new RefactorException(Check.CALL_UNRESOLVABLE, "Could not resolve call '" + call + "' in " + fileOf(ctx, cu)
                             + " -- refusing rather than risk deleting the method while this might still call it: "
                             + e.getMessage(), e);
                 }
@@ -502,7 +502,7 @@ public final class InlineMethodRefactor {
 
         List<Parameter> parameters = targetMethod.getParameters();
         if (parameters.size() != call.getArguments().size()) {
-            throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+            throw new RefactorException(Check.REJECT_UNSAFE_ARGUMENT_SUBSTITUTION, "Cannot inline call to '" + methodName + "' at "
                     + call.getBegin().map(Object::toString).orElse("?") + ": argument count doesn't match the "
                     + "method's parameter count.");
         }
@@ -516,7 +516,7 @@ public final class InlineMethodRefactor {
         try {
             originalTypeDescribe = call.calculateResolvedType().describe();
         } catch (RuntimeException e) {
-            throw new RefactorException("Could not determine the type of the call to '" + methodName + "' at "
+            throw new RefactorException(Check.CALL_TYPE_UNRESOLVABLE, "Could not determine the type of the call to '" + methodName + "' at "
                     + call.getBegin().map(Object::toString).orElse("?") + ", which is needed to verify the inlined "
                     + "expression keeps that same type: " + e.getMessage(), e);
         }
@@ -870,7 +870,7 @@ public final class InlineMethodRefactor {
         Node current = node;
         while (current != root) {
             Node parent = current.getParentNode()
-                    .orElseThrow(() -> new RefactorException("Internal error: lost the path to the return expression"));
+                    .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR, "Internal error: lost the path to the return expression"));
             if (parent instanceof LambdaExpr) {
                 return false;
             }
@@ -1815,7 +1815,7 @@ public final class InlineMethodRefactor {
         JavaParser parser = new JavaParser(new ParserConfiguration()
                 .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21));
         return parser.parseExpression(text).getResult()
-                .orElseThrow(() -> new RefactorException("Internal error: could not re-parse substituted "
+                .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR, "Internal error: could not re-parse substituted "
                         + "expression '" + text + "'"));
     }
 
@@ -2368,14 +2368,14 @@ public final class InlineMethodRefactor {
                 .filter(m -> m.getNameAsString().equals(methodName))
                 .toList();
         if (matches.isEmpty()) {
-            throw new RefactorException(
+            throw new RefactorException(Check.METHOD_NOT_FOUND, 
                     "No method named '" + methodName + "' declared directly on '" + targetClass.getNameAsString() + "'");
         }
         if (matches.size() == 1) {
             return matches.get(0);
         }
         if (paramsFilter == null) {
-            throw new RefactorException("Method name '" + methodName + "' is overloaded (" + matches.size()
+            throw new RefactorException(Check.METHOD_NAME_OVERLOADED, "Method name '" + methodName + "' is overloaded (" + matches.size()
                     + " overloads) on '" + targetClass.getNameAsString() + "'. Disambiguate with --params.");
         }
         List<String> wanted = parseParamsFilter(paramsFilter);
@@ -2390,11 +2390,11 @@ public final class InlineMethodRefactor {
             }
         }
         if (filtered.isEmpty()) {
-            throw new RefactorException("No overload of '" + methodName + "' on '" + targetClass.getNameAsString()
+            throw new RefactorException(Check.NO_OVERLOAD_MATCHES_PARAMS, "No overload of '" + methodName + "' on '" + targetClass.getNameAsString()
                     + "' matches --params '" + paramsFilter + "'.");
         }
         if (filtered.size() > 1) {
-            throw new RefactorException("--params '" + paramsFilter + "' matches more than one overload of '"
+            throw new RefactorException(Check.PARAMS_FILTER_AMBIGUOUS, "--params '" + paramsFilter + "' matches more than one overload of '"
                     + methodName + "' on '" + targetClass.getNameAsString()
                     + "'. Use fully-qualified type names to disambiguate.");
         }
@@ -2409,7 +2409,7 @@ public final class InlineMethodRefactor {
         for (String token : paramsFilter.split(",", -1)) {
             String trimmed = token.trim();
             if (trimmed.isEmpty()) {
-                throw new RefactorException("Invalid --params '" + paramsFilter
+                throw new RefactorException(Check.INVALID_PARAMS_FILTER, "Invalid --params '" + paramsFilter
                         + "': empty parameter type (use --params \"\" for a zero-arg overload).");
             }
             tokens.add(trimmed);
@@ -2448,7 +2448,7 @@ public final class InlineMethodRefactor {
         try {
             return method.resolve();
         } catch (RuntimeException e) {
-            throw new RefactorException("Could not resolve target method '" + originalName + "' on '"
+            throw new RefactorException(Check.TARGET_METHOD_UNRESOLVABLE, "Could not resolve target method '" + originalName + "' on '"
                     + owner.getNameAsString() + "': " + e.getMessage(), e);
         }
     }
@@ -2458,7 +2458,7 @@ public final class InlineMethodRefactor {
                 .filter(e -> e.getValue() == cu)
                 .map(Map.Entry::getKey)
                 .findFirst()
-                .orElseThrow(() -> new RefactorException("Internal error: compilation unit has no known source file"));
+                .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR, "Internal error: compilation unit has no known source file"));
     }
 
     private static String readOriginal(Path file) {
@@ -2491,7 +2491,7 @@ public final class InlineMethodRefactor {
                     // best-effort cleanup
                 }
             }
-            throw new RefactorException("Failed to write changes: " + e.getMessage(), e);
+            throw new RefactorException(Check.WRITE_FAILED, "Failed to write changes: " + e.getMessage(), e);
         }
     }
 }

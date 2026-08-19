@@ -1190,7 +1190,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.METHOD_NAME_OVERLOADED, inline("Util", "twice")))
                     .hasMessageContaining("Disambiguate with --params.");
         }
     }

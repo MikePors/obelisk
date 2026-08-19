@@ -217,7 +217,7 @@ public final class RenameMethodRefactor {
 
     private static void validateIdentifier(String name) {
         if (!SourceVersion.isIdentifier(name) || SourceVersion.isKeyword(name)) {
-            throw new RefactorException("'" + name + "' is not a valid Java method name");
+            throw new RefactorException(Check.INVALID_IDENTIFIER, "'" + name + "' is not a valid Java method name");
         }
     }
 
@@ -737,7 +737,7 @@ public final class RenameMethodRefactor {
                 .filter(m -> m.getNameAsString().equals(methodName))
                 .toList();
         if (matches.isEmpty()) {
-            throw new RefactorException(
+            throw new RefactorException(Check.METHOD_NOT_FOUND, 
                     "No method named '" + methodName + "' declared directly on '" + targetClass.getNameAsString() + "'");
         }
         if (matches.size() == 1) {
@@ -761,7 +761,7 @@ public final class RenameMethodRefactor {
             return only;
         }
         if (paramsFilter == null) {
-            throw new RefactorException("Method name '" + methodName + "' is overloaded (" + matches.size()
+            throw new RefactorException(Check.METHOD_NAME_OVERLOADED, "Method name '" + methodName + "' is overloaded (" + matches.size()
                     + " overloads) on '" + targetClass.getNameAsString() + "'. Disambiguate with --params, "
                     + "e.g.: " + describeOverloads(matches, methodName) + ".");
         }
@@ -780,12 +780,12 @@ public final class RenameMethodRefactor {
             }
         }
         if (filtered.isEmpty()) {
-            throw new RefactorException("No overload of '" + methodName + "' on '" + targetClass.getNameAsString()
+            throw new RefactorException(Check.NO_OVERLOAD_MATCHES_PARAMS, "No overload of '" + methodName + "' on '" + targetClass.getNameAsString()
                     + "' matches --params '" + paramsFilter + "'. Available overloads: "
                     + describeOverloads(matches, methodName) + ".");
         }
         if (filtered.size() > 1) {
-            throw new RefactorException("--params '" + paramsFilter + "' matches more than one overload of '"
+            throw new RefactorException(Check.PARAMS_FILTER_AMBIGUOUS, "--params '" + paramsFilter + "' matches more than one overload of '"
                     + methodName + "' on '" + targetClass.getNameAsString() + "': "
                     + describeOverloads(filtered, methodName) + ". Use fully-qualified type names to disambiguate.");
         }
@@ -808,7 +808,7 @@ public final class RenameMethodRefactor {
         for (String token : paramsFilter.split(",", -1)) {
             String trimmed = token.trim();
             if (trimmed.isEmpty()) {
-                throw new RefactorException("Invalid --params '" + paramsFilter
+                throw new RefactorException(Check.INVALID_PARAMS_FILTER, "Invalid --params '" + paramsFilter
                         + "': empty parameter type (use --params \"\" for a zero-arg overload, "
                         + "not a leading/trailing/doubled comma).");
             }
@@ -881,7 +881,7 @@ public final class RenameMethodRefactor {
         try {
             return method.resolve();
         } catch (RuntimeException e) {
-            throw new RefactorException("Could not resolve target method '" + originalName + "' on '"
+            throw new RefactorException(Check.TARGET_METHOD_UNRESOLVABLE, "Could not resolve target method '" + originalName + "' on '"
                     + owner.getNameAsString() + "': " + e.getMessage(), e);
         }
     }
@@ -916,7 +916,7 @@ public final class RenameMethodRefactor {
                 .filter(e -> e.getValue() == cu)
                 .map(Map.Entry::getKey)
                 .findFirst()
-                .orElseThrow(() -> new RefactorException("Internal error: compilation unit has no known source file"));
+                .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR, "Internal error: compilation unit has no known source file"));
     }
 
     private static String readOriginal(Path file) {
@@ -959,7 +959,7 @@ public final class RenameMethodRefactor {
                     // best-effort cleanup
                 }
             }
-            throw new RefactorException("Failed to write changes: " + e.getMessage(), e);
+            throw new RefactorException(Check.WRITE_FAILED, "Failed to write changes: " + e.getMessage(), e);
         }
     }
 }

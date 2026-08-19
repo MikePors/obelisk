@@ -129,7 +129,7 @@ public final class ExtractVariableRefactor {
         Expression target = findExpression(cu, start, end);
 
         Statement anchorStatement = target.findAncestor(Statement.class)
-                .orElseThrow(() -> new RefactorException("The expression at " + start + "-" + end
+                .orElseThrow(() -> new RefactorException(Check.INVALID_IDENTIFIER, "The expression at " + start + "-" + end
                         + " isn't inside a method/constructor/initializer body (e.g. it's a field initializer, "
                         + "annotation argument, or type-level construct) -- extract-variable only supports "
                         + "expressions inside a statement."));
@@ -161,7 +161,7 @@ public final class ExtractVariableRefactor {
         rejectNameCollision(ctx, target, name);
 
         Position anchorBegin = anchorStatement.getBegin()
-                .orElseThrow(() -> new RefactorException("Internal error: enclosing statement has no position"));
+                .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR, "Internal error: enclosing statement has no position"));
 
         String original = readOriginal(resolvedFile);
         int lineStart = offsetOfLineStart(original, anchorBegin.line);
@@ -202,14 +202,14 @@ public final class ExtractVariableRefactor {
 
     private static void validateIdentifier(String name) {
         if (!SourceVersion.isIdentifier(name) || SourceVersion.isKeyword(name)) {
-            throw new RefactorException("'" + name + "' is not a valid Java variable name");
+            throw new RefactorException(Check.INVALID_IDENTIFIER, "'" + name + "' is not a valid Java variable name");
         }
     }
 
     private static Path resolveFile(ProjectContext ctx, Path file) {
         Path absolute = file.isAbsolute() ? file.normalize() : ctx.projectDir().resolve(file).normalize();
         if (!ctx.unitsByFile().containsKey(absolute)) {
-            throw new RefactorException("'" + file + "' is not one of the project's parsed source files "
+            throw new RefactorException(Check.FILE_NOT_IN_PROJECT, "'" + file + "' is not one of the project's parsed source files "
                     + "(resolved to " + absolute + ")");
         }
         return absolute;
@@ -231,7 +231,7 @@ public final class ExtractVariableRefactor {
                 return candidate;
             }
         }
-        throw new RefactorException("No expression found starting at " + start + " and ending at " + end
+        throw new RefactorException(Check.EXPRESSION_NOT_FOUND, "No expression found starting at " + start + " and ending at " + end
                 + " -- the range must exactly match a single expression's boundaries.");
     }
 
@@ -956,7 +956,7 @@ public final class ExtractVariableRefactor {
         for (int currentLine = 1; currentLine < line; currentLine++) {
             int newline = content.indexOf('\n', offset);
             if (newline < 0) {
-                throw new RefactorException("Internal error: line " + line + " is past the end of the file");
+                throw new RefactorException(Check.INTERNAL_ERROR, "Internal error: line " + line + " is past the end of the file");
             }
             offset = newline + 1;
         }
@@ -993,7 +993,7 @@ public final class ExtractVariableRefactor {
                     // best-effort cleanup
                 }
             }
-            throw new RefactorException("Failed to write changes: " + e.getMessage(), e);
+            throw new RefactorException(Check.WRITE_FAILED, "Failed to write changes: " + e.getMessage(), e);
         }
     }
 }

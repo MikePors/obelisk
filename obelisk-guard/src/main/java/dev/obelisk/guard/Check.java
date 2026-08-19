@@ -15,8 +15,15 @@ package dev.obelisk.guard;
  * processor add the other half of that guarantee: that no two check METHODS
  * claim the same constant, and that every check declares one.
  *
- * <p>Ordering and grouping here are meaningless; the constant name is the
- * contract. Renaming one is a breaking change for anything asserting on it.
+ * <p>EVERY {@code RefactorException} carries one. There is deliberately no
+ * message-only constructor, so "this failure isn't really a check" is not a
+ * shortcut anyone can take -- an earlier version drew that line by hand,
+ * exempting lookup and validation failures, and the line turned out to be
+ * exactly the kind of hand-drawn boundary that has been wrong repeatedly in
+ * this codebase. Completeness is now a compile-time property.
+ *
+ * <p>The constant name is the contract. Renaming one is a breaking change
+ * for anything asserting on it. Grouping is for readers only.
  */
 public enum Check {
     REJECT_ALL_LITERAL_ARGUMENTS_CONSTANT_PROMOTION,
@@ -71,4 +78,42 @@ public enum Check {
     VERIFY_EVERYTHING_STILL_RESOLVES,
     VERIFY_REPAIRED_REFERENCES,
     VERIFY_REPAIRS_BIND_TO_ORIGINAL_DECLARATION,
+
+    // --- Target lookup: the thing you named could not be identified ---
+    CLASS_NOT_FOUND,
+    CLASS_NAME_AMBIGUOUS,
+    METHOD_NOT_FOUND,
+    METHOD_NAME_OVERLOADED,
+    NO_OVERLOAD_MATCHES_PARAMS,
+    PARAMS_FILTER_AMBIGUOUS,
+    FIELD_NOT_FOUND,
+    EXPRESSION_NOT_FOUND,
+    EXPRESSION_NOT_IN_A_STATEMENT,
+    TARGET_FIELD_NOT_A_FIELD,
+
+    // --- Argument validation: what you asked for is malformed ---
+    INVALID_IDENTIFIER,
+    INVALID_PARAMS_FILTER,
+    FILE_NOT_IN_PROJECT,
+
+    // --- Resolution: the symbol solver could not answer ---
+    TARGET_METHOD_UNRESOLVABLE,
+    TARGET_FIELD_UNRESOLVABLE,
+    TARGET_TYPE_UNRESOLVABLE,
+    CALL_UNRESOLVABLE,
+    METHOD_REFERENCE_UNRESOLVABLE,
+    CALL_TYPE_UNRESOLVABLE,
+
+    // --- Environment: something outside the source tree failed ---
+    CLASSPATH_RESOLUTION_FAILED,
+    CLASSPATH_OUTPUT_UNREADABLE,
+    CLASSPATH_PROCESS_FAILED,
+    CLASSPATH_PROCESS_INTERRUPTED,
+    CLASSPATH_DIRECTORY_UNREADABLE,
+    NO_SOURCE_ROOTS,
+    SOURCE_FILE_UNPARSEABLE,
+    WRITE_FAILED,
+
+    // --- Internal invariants: a bug in obelisk, not in the input ---
+    INTERNAL_ERROR,
 }

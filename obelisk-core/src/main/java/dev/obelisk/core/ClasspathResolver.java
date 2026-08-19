@@ -1,5 +1,6 @@
 package dev.obelisk.core;
 
+import dev.obelisk.guard.Check;
 import org.w3c.dom.Document;
 import org.w3c.dom.NodeList;
 
@@ -80,7 +81,7 @@ public final class ClasspathResolver {
                 }
                 return entries;
             } catch (RefactorException reactorFailure) {
-                RefactorException combined = new RefactorException("Classpath resolution failed.\nStandalone "
+                RefactorException combined = new RefactorException(Check.CLASSPATH_RESOLUTION_FAILED, "Classpath resolution failed.\nStandalone "
                         + "attempt: " + standaloneFailure.getMessage() + "\nReactor-aware fallback (reactor root "
                         + root + "): " + reactorFailure.getMessage(), reactorFailure);
                 combined.addSuppressed(standaloneFailure);
@@ -170,7 +171,7 @@ public final class ClasspathResolver {
                 Files.deleteIfExists(outputFile);
             }
         } catch (IOException e) {
-            throw new RefactorException("Failed to read classpath output for '" + description + "': "
+            throw new RefactorException(Check.CLASSPATH_OUTPUT_UNREADABLE, "Failed to read classpath output for '" + description + "': "
                     + e.getMessage(), e);
         }
     }
@@ -199,10 +200,10 @@ public final class ClasspathResolver {
             String output = new String(process.getInputStream().readAllBytes());
             int exitCode = process.waitFor();
             if (exitCode != 0) {
-                throw new RefactorException(description + " failed (exit " + exitCode + "):\n" + output);
+                throw new RefactorException(Check.CLASSPATH_PROCESS_FAILED, description + " failed (exit " + exitCode + "):\n" + output);
             }
         } catch (IOException e) {
-            throw new RefactorException("Failed to run '" + description + "' in " + workingDir
+            throw new RefactorException(Check.CLASSPATH_PROCESS_FAILED, "Failed to run '" + description + "' in " + workingDir
                     + " (is Maven installed and on PATH?): " + e.getMessage(), e);
         } catch (InterruptedException e) {
             if (process != null) {
@@ -211,7 +212,7 @@ public final class ClasspathResolver {
                 process.destroyForcibly();
             }
             Thread.currentThread().interrupt();
-            throw new RefactorException("Interrupted while running '" + description + "'", e);
+            throw new RefactorException(Check.CLASSPATH_PROCESS_INTERRUPTED, "Interrupted while running '" + description + "'", e);
         }
     }
 }

@@ -73,7 +73,7 @@ class OtherRefactorsTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.METHOD_NAME_OVERLOADED, ctx ->
                     RenameMethodRefactor.run(ctx, "Greeter", "greet", "salute", null, true)))
                     .hasMessageContaining("Disambiguate with --params, e.g.");
         }
@@ -238,7 +238,7 @@ class OtherRefactorsTest {
                             """);
 
             Path file = dir.resolve("src/main/java/com/example/Main.java");
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.EXPRESSION_NOT_FOUND, ctx ->
                     ExtractVariableRefactor.run(ctx, file, 4, 9, 4, 14, "x", true)))
                     .isNotNull();
         }

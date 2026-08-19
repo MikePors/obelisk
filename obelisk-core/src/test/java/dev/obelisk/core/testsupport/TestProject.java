@@ -94,9 +94,8 @@ public final class TestProject {
         RefactorException e = expectRefused(action);
         assertThat(e.check())
                 .as("expected %s to refuse this, but the refusal came from %s: %s",
-                        expected, e.check().map(Enum::name).orElse("no check (an IO/resolver/validation failure)"),
-                        e.getMessage())
-                .contains(expected);
+                        expected, e.check(), e.getMessage())
+                .isEqualTo(expected);
         return e;
     }
 

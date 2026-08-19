@@ -75,7 +75,7 @@ public final class RenameFieldRefactor {
         VariableDeclarator targetField = findField(targetClass, oldName);
         ResolvedValueDeclaration resolvedTarget = resolveTarget(targetField, targetClass, oldName);
         if (!(resolvedTarget instanceof ResolvedFieldDeclaration resolvedField)) {
-            throw new RefactorException("'" + oldName + "' on '" + targetClass.getNameAsString()
+            throw new RefactorException(Check.INVALID_IDENTIFIER, "'" + oldName + "' on '" + targetClass.getNameAsString()
                     + "' did not resolve to a field declaration");
         }
         String ownerQualifiedName = resolvedField.declaringType().getQualifiedName();
@@ -200,7 +200,7 @@ public final class RenameFieldRefactor {
 
     private static void validateIdentifier(String name) {
         if (!SourceVersion.isIdentifier(name) || SourceVersion.isKeyword(name)) {
-            throw new RefactorException("'" + name + "' is not a valid Java field name");
+            throw new RefactorException(Check.INVALID_IDENTIFIER, "'" + name + "' is not a valid Java field name");
         }
     }
 
@@ -221,7 +221,7 @@ public final class RenameFieldRefactor {
                 }
             }
         }
-        throw new RefactorException("No field named '" + fieldName + "' declared directly on '"
+        throw new RefactorException(Check.FIELD_NOT_FOUND, "No field named '" + fieldName + "' declared directly on '"
                 + targetClass.getNameAsString() + "'");
     }
 
@@ -230,7 +230,7 @@ public final class RenameFieldRefactor {
         try {
             return field.resolve();
         } catch (RuntimeException e) {
-            throw new RefactorException("Could not resolve target field '" + originalName + "' on '"
+            throw new RefactorException(Check.TARGET_FIELD_UNRESOLVABLE, "Could not resolve target field '" + originalName + "' on '"
                     + owner.getNameAsString() + "': " + e.getMessage(), e);
         }
     }
@@ -609,7 +609,7 @@ public final class RenameFieldRefactor {
                 .filter(e -> e.getValue() == cu)
                 .map(Map.Entry::getKey)
                 .findFirst()
-                .orElseThrow(() -> new RefactorException("Internal error: compilation unit has no known source file"));
+                .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR, "Internal error: compilation unit has no known source file"));
     }
 
     private static String readOriginal(Path file) {
@@ -642,7 +642,7 @@ public final class RenameFieldRefactor {
                     // best-effort cleanup
                 }
             }
-            throw new RefactorException("Failed to write changes: " + e.getMessage(), e);
+            throw new RefactorException(Check.WRITE_FAILED, "Failed to write changes: " + e.getMessage(), e);
         }
     }
 }

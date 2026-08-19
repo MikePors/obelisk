@@ -14,6 +14,21 @@
 # Adding an entry here should always be a considered decision. A NEW survivor
 # that is not on this list fails the run -- that is the signal worth having.
 #
+# There are TWO kinds of entry here, and they are not equally comfortable:
+#
+#   (a) SUBSUMED -- a broader check refuses the same case first. Verifiable:
+#       disable the broader one and the narrow one starts being reachable.
+#
+#   (b) BACKSTOP -- the check only fires when something UPSTREAM has already
+#       failed, so with every precondition intact it is unreachable by
+#       construction. No test can kill it, because writing one would mean
+#       anticipating the hazard -- and an anticipated hazard gets a
+#       precondition instead. Be honest about the cost: a backstop on this
+#       list is also UNVERIFIED. It could be silently broken and nothing
+#       would notice. Its value is that it fails closed if a precondition is
+#       ever loosened or found incomplete, which has happened repeatedly
+#       here; that is worth having, but it is not the same as being tested.
+#
 # This file is itself a hazard: an entry added on a plausible-sounding but
 # WRONG justification converts a real signal into permanent silence. That has
 # already happened once. RenameFieldRefactor|rejectShadowingCollision was
@@ -29,3 +44,8 @@ InlineMethodRefactor.java|rejectParameterWrites     # an assignment / ++ is bann
 InlineMethodRefactor.java|rejectDeferredEvaluationConstructs  # lambda half: a lambda-valued body always fails rejectReturnTypeConversion, whose resolver cannot type a lambda. method-reference half: a bare `s::length` body is refused by rejectFreeReferences as a type reference
 RenameClassRefactor.java|rejectDuplicateTypeName    # a sibling type in the same package also resolves at the declaration site, so rejectNewNameAlreadyBoundAtReference catches it
 RenameMethodRefactor.java|rejectDuplicateSignature  # requires name AND matching parameter list on the owner's declared methods; rejectNewNameAlreadyVisible refuses on the bare name alone, against the same owners, so this is a strict subset
+
+# --- (b) BACKSTOPS: unreachable while every precondition holds ---
+InlineMethodRefactor.java|verifyBindingsPreserved   # post-transformation guard; fires only if a precondition missed something, which by definition cannot be written as a test
+InlineMethodRefactor.java|verifyEverythingStillResolves  # same, the per-node resolution half
+InlineMethodRefactor.java|verifyRepairsBindToOriginalDeclaration  # same, guards the static-field repair; repair qualifies with an FQN, which cannot bind elsewhere, so it is unreachable unless the repair itself regresses

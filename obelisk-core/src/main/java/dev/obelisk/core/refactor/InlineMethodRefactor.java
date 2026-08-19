@@ -344,11 +344,7 @@ public final class InlineMethodRefactor {
                             + " while checking for uses of '" + methodName + "' -- refusing rather than risk "
                             + "deleting the method while this might still reference it: " + e.getMessage(), e);
                 }
-                if (resolvedRef.getQualifiedSignature().equals(targetSignature)) {
-                    throw new RefactorException("Cannot inline '" + methodName + "': it's referenced via "
-                            + "a method reference ('" + ref + "' in " + fileOf(ctx, cu) + "), which can't "
-                            + "be textually inlined the way a call site can.");
-                }
+                rejectMethodReferenceUse(resolvedRef, targetSignature, ref, methodName, fileOf(ctx, cu));
             }
             for (MethodCallExpr call : cu.findAll(MethodCallExpr.class)) {
                 if (!call.getNameAsString().equals(methodName)) {
@@ -365,13 +361,7 @@ public final class InlineMethodRefactor {
                 if (!resolvedCall.getQualifiedSignature().equals(targetSignature)) {
                     continue;
                 }
-                for (MethodCallExpr already : matchedCalls) {
-                    if (isDescendant(call, already) || isDescendant(already, call)) {
-                        throw new RefactorException("Cannot inline '" + methodName + "': a call to it at "
-                                + call.getBegin().map(Object::toString).orElse("?") + " is nested inside another "
-                                + "call to the same method -- not supported in this version.");
-                    }
-                }
+                rejectNestedSelfCall(call, matchedCalls, methodName);
                 matchedCalls.add(call);
                 rejectUnsafeReceiver(call, targetMethod.isStatic(), methodName);
                 rejectStatementPosition(call, methodName);
@@ -437,6 +427,37 @@ public final class InlineMethodRefactor {
      * originalTypeDescribe} is the type the ORIGINAL call expression
      * resolved to, captured while the original AST is still intact.
      */
+    /**
+     * Refuses when the method is used via a method reference ({@code
+     * Foo::bar}), which can't be textually inlined the way a call site can
+     * -- and since the declaration is being deleted, leaving one behind
+     * would break the build.
+     *
+     * <p>Extracted from an inline {@code throw} so {@code
+     * tools/mutation-check.sh} can reach it; that script only mutates calls
+     * to named {@code reject*}/{@code verify*} methods.
+     */
+    private static void rejectMethodReferenceUse(ResolvedMethodDeclaration resolvedRef, String targetSignature,
+                                                   MethodReferenceExpr ref, String methodName, Path file) {
+        if (resolvedRef.getQualifiedSignature().equals(targetSignature)) {
+            throw new RefactorException("Cannot inline '" + methodName + "': it's referenced via "
+                    + "a method reference ('" + ref + "' in " + file + "), which can't "
+                    + "be textually inlined the way a call site can.");
+        }
+    }
+
+    /** Refuses a call to the target nested inside another call to the same method. */
+    private static void rejectNestedSelfCall(MethodCallExpr call, List<MethodCallExpr> matchedCalls,
+                                               String methodName) {
+        for (MethodCallExpr already : matchedCalls) {
+            if (isDescendant(call, already) || isDescendant(already, call)) {
+                throw new RefactorException("Cannot inline '" + methodName + "': a call to it at "
+                        + call.getBegin().map(Object::toString).orElse("?") + " is nested inside another "
+                        + "call to the same method -- not supported in this version.");
+            }
+        }
+    }
+
     private record PlannedInline(MethodCallExpr call, Expression substituted, String originalTypeDescribe,
                                  List<String> repairedBindings) {
     }

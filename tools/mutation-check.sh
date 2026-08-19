@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Poor-man's mutation testing for obelisk's refusal checks.
 #
-# Every safety check in this codebase is a `reject*` method called from a
-# refactor's entry point. This script disables each such CALL in turn, runs
+# Every safety check in this codebase is a `reject*` or `verify*` method
+# called from a refactor's entry point. This script disables each such CALL in turn, runs
 # the suite, and reports whether any test noticed.
 #
 # Why this exists: a test that asserts on an error message can pass because a
@@ -16,11 +16,12 @@
 # that some other check also satisfies. Both are worth fixing.
 #
 # SCOPE, so that "0 survived" is not over-read: this measures only calls to
-# `reject*` methods. Refusals raised by an inline `throw new
-# RefactorException` -- there are several, e.g. ExtractVariableRefactor's
-# not-a-block-child and indentation guards, RenameClassRefactor's
-# target-file-exists guard, findMethod's overload ambiguity -- are NOT
-# measured by this tool at all.
+# named `reject*`/`verify*` methods. A refusal written as an inline `throw
+# new RefactorException` is invisible to it. The genuine safety ones have
+# been extracted into named methods for exactly this reason; what remains
+# inline is IO/resolver failure reporting ("Failed to write changes",
+# "Could not resolve X"), which fires on environment failure rather than on
+# an unsafe transformation and would need fault injection to exercise.
 #
 # Some checks are subsumed by a broader one and can never be killed. Those
 # live in tools/mutation-allowlist.txt with a justification each; they are
@@ -52,7 +53,7 @@ trap cleanup EXIT INT TERM
 restore() { cp -f "$WORK/pristine/$1" "$SRC/$1"; }
 
 mapfile -t TARGETS < <(
-  grep -rn --include='*.java' -E '^\s+reject[A-Za-z]+\(' "$SRC" \
+  grep -rn --include='*.java' -E '^\s+(reject|verify)[A-Za-z]+\(' "$SRC" \
     | grep -v 'private static' \
     | sed 's/:\s*/:/' \
     | while IFS=: read -r file line rest; do

@@ -261,8 +261,7 @@ public final class RenameClassRefactor {
                 // content changes in this same rename, ordering decides which
                 // write wins and the other is lost outright -- including,
                 // in the worst case, the renamed class's own new content).
-                throw new RefactorException("Cannot rename '" + className + "' to '" + newName + "': " + newFile
-                        + " already exists. Remove or rename it first.");
+                rejectExistingTargetFile(newFile, className, newName);
             }
             renamedFiles.put(targetFile, newFile);
         } else if (isTopLevelType(targetClass)) {
@@ -341,6 +340,18 @@ public final class RenameClassRefactor {
      * declared one-per-file), or two member types with the same simple name
      * in one enclosing type.
      */
+    /**
+     * Refuses when the file this rename would move the class into already
+     * exists. Extracted from an inline {@code throw} so the mutation script
+     * can reach it -- and worth measuring more than most, since the failure
+     * it prevents is DATA LOSS: the move uses {@code REPLACE_EXISTING}, so
+     * without this an unrelated file is clobbered silently.
+     */
+    private static void rejectExistingTargetFile(Path newFile, String className, String newName) {
+        throw new RefactorException("Cannot rename '" + className + "' to '" + newName + "': " + newFile
+                + " already exists. Remove or rename it first.");
+    }
+
     private static void rejectDuplicateTypeName(ProjectContext ctx, TypeDeclaration<?> targetClass, String newName) {
         if (targetClass.getNameAsString().equals(newName)) {
             throw new RefactorException("'" + newName + "' is already the name of '"

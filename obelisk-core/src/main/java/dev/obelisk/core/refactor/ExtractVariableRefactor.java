@@ -153,18 +153,7 @@ public final class ExtractVariableRefactor {
         // (the synthetic statement's parent is a LambdaExpr, not a
         // BlockStmt), but with a misleading "add braces" message -- give
         // the accurate reason instead.
-        if (anchorStatement.getParentNode().orElse(null) instanceof LambdaExpr lambda
-                && lambda.getExpressionBody().isPresent()) {
-            throw new RefactorException("Cannot extract this expression: it's (part of) the body of an "
-                    + "expression-bodied lambda, so its evaluation is deferred to when the lambda is invoked -- "
-                    + "hoisting it out to an enclosing statement would evaluate it eagerly instead, changing "
-                    + "behavior.");
-        }
-
-        if (!(anchorStatement.getParentNode().orElse(null) instanceof BlockStmt)) {
-            throw new RefactorException("The statement containing this expression isn't a direct child of a "
-                    + "{ } block (likely a braceless if/while/for body) -- add braces around it first.");
-        }
+        rejectUnanchorableStatement(anchorStatement);
 
         rejectNonValueExpression(target);
         rejectNameCollision(ctx, target, name);
@@ -176,11 +165,7 @@ public final class ExtractVariableRefactor {
         int lineStart = offsetOfLineStart(original, anchorBegin.line);
         int anchorOffset = offsetOf(original, anchorBegin.line, anchorBegin.column);
         String indent = original.substring(lineStart, anchorOffset);
-        if (!indent.isBlank()) {
-            throw new RefactorException("The statement containing this expression isn't the first thing on its "
-                    + "source line -- extract-variable needs to copy its indentation, so move it to its own line "
-                    + "first.");
-        }
+        rejectStatementNotAtLineStart(indent);
 
         int exprStart = offsetOf(original, start.line, start.column);
         int exprEndExclusive = offsetOf(original, end.line, end.column) + 1;
@@ -812,6 +797,43 @@ public final class ExtractVariableRefactor {
      * rather than assumed safe, consistent with this tool's "fail loudly
      * rather than guess" approach elsewhere.
      */
+    /**
+     * Refuses an anchor statement this refactor cannot insert before: the
+     * body of an expression-bodied lambda (evaluation is deferred there), or
+     * anything that isn't a direct child of a {@code { }} block.
+     *
+     * <p>Extracted from an inline {@code throw} so {@code
+     * tools/mutation-check.sh} can reach it -- that script only mutates
+     * calls to named {@code reject*}/{@code verify*} methods, so a refusal
+     * written inline is invisible to it and its coverage report silently
+     * excluded this one.
+     */
+    private static void rejectUnanchorableStatement(Statement anchorStatement) {
+        if (anchorStatement.getParentNode().orElse(null) instanceof LambdaExpr lambda
+                && lambda.getExpressionBody().isPresent()) {
+            throw new RefactorException("Cannot extract this expression: it's (part of) the body of an "
+                    + "expression-bodied lambda, so its evaluation is deferred to when the lambda is invoked -- "
+                    + "hoisting it out to an enclosing statement would evaluate it eagerly instead, changing "
+                    + "behavior.");
+        }
+        if (!(anchorStatement.getParentNode().orElse(null) instanceof BlockStmt)) {
+            throw new RefactorException("The statement containing this expression isn't a direct child of a "
+                    + "{ } block (likely a braceless if/while/for body) -- add braces around it first.");
+        }
+    }
+
+    /**
+     * Refuses when the anchor statement doesn't start its own source line,
+     * since the new declaration's indentation is copied verbatim from it.
+     */
+    private static void rejectStatementNotAtLineStart(String indent) {
+        if (!indent.isBlank()) {
+            throw new RefactorException("The statement containing this expression isn't the first thing on its "
+                    + "source line -- extract-variable needs to copy its indentation, so move it to its own line "
+                    + "first.");
+        }
+    }
+
     private static void rejectNonValueExpression(Expression target) {
         try {
             if (target.calculateResolvedType().isVoid()) {

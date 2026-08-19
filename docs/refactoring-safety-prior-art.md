@@ -598,3 +598,59 @@ the space by constructing cases; enumerating the use sites of a known-bad API
 covers it. The list of seven is itself the accumulated residue of every prior
 round, so this is the point where that history starts paying compound
 interest rather than being re-learned.
+
+
+## 11. Extending mutation coverage
+
+`tools/mutation-check.sh` only ever measured calls to named `reject*`
+methods. 56 of the 134 `RefactorException` throws were written inline and so
+were invisible to it -- meaning "0 survived" was a narrower claim than it
+sounded.
+
+Categorising those 56 showed the work was not uniform:
+
+- **~29 are IO / resolver failure reporting** (`Failed to write changes`,
+  `Could not resolve X`). These fire on environment failure, not on an unsafe
+  transformation; disabling one produces a crash later rather than a wrong
+  refactor, and exercising them needs fault injection. Deliberately left
+  inline, with the reason recorded in the script header.
+- **~12 are lookup and argument validation**, partly covered already.
+- **~15 are genuine safety logic.**
+
+Five of the genuine ones were extracted into named methods, and the script
+was widened to discover `verify*` as well as `reject*`. That took the target
+count from 44 to 52 -- and **every newly-exposed guard survived mutation
+immediately**. None had ever been tested.
+
+That is the finding worth keeping: a refusal written as an inline `throw` is
+not merely harder to measure, it is *systematically less likely to be
+tested*, because nothing reports its absence. Among the untested ones was
+rename-class's target-file-exists guard, whose failure mode is **data loss**
+-- the move uses `REPLACE_EXISTING`, so without it an unrelated file is
+clobbered silently.
+
+### 11.1 A second kind of allowlist entry
+
+Widening to `verify*` brought the post-transformation verification pass into
+scope for the first time, and all three of its methods survived. That was
+predicted, and it is not fixable by writing a test.
+
+A backstop that fires only when a precondition has already failed is
+unreachable by construction while the preconditions hold. Writing a test for
+it would mean anticipating the hazard -- and any anticipated hazard gets a
+precondition instead, which makes the backstop unreachable again. So the
+allowlist now distinguishes:
+
+- **(a) SUBSUMED** -- a broader check refuses the same case first.
+  Verifiable: disable the broader one and the narrow one becomes reachable.
+- **(b) BACKSTOP** -- unreachable while every precondition holds.
+
+With the cost stated plainly in the file: a backstop on that list is also
+**unverified**. It could be silently broken and nothing would notice. Its
+value is failing closed if a precondition is ever loosened or found
+incomplete -- which has happened repeatedly in this project -- but that is
+not the same as being tested. Blurring the two categories is what produced
+the wrong entry removed in §9.4.
+
+Final: **130 tests, 44 killed / 8 subsumed / 0 survived / 0 unmeasurable**
+across 52 targets.

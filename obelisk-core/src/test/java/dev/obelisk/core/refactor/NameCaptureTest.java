@@ -104,7 +104,13 @@ class NameCaptureTest {
             // does not compile.
             assertThat(p.expectRefused(ctx ->
                     RenameFieldRefactor.run(ctx, "Color", "shade", "RED", true)))
-                    .hasMessageContaining("enum constant");
+                    // Deliberately asserts on wording UNIQUE to the
+                    // enum-constant check. Asserting on "enum constant" alone
+                    // passed even with that check disabled, because
+                    // rejectNewNameAlreadyBound also refuses this case and its
+                    // message happens to contain the same words -- so the test
+                    // could not tell the two checks apart.
+                    .hasMessageContaining("shares a name space with its fields");
         }
 
         @Test
@@ -203,6 +209,37 @@ class NameCaptureTest {
                             }
                             """);
 
+            assertThat(p.expectRefused(ctx ->
+                    RenameMethodRefactor.run(ctx, "Base", "hello", "greet", null, true)))
+                    .hasMessageContaining("subtype");
+        }
+
+
+        @Test
+        @DisplayName("an ANONYMOUS subclass declaring the new name is an accidental override too")
+        void refusesAccidentalOverrideByAnonymousSubclass() {
+            TestProject p = project()
+                    .add("com/example/Base.java", """
+                            package com.example;
+                            public class Base {
+                                public String hello() { return "Base.hello"; }
+                            }
+                            """)
+                    .add("com/example/Main.java", """
+                            package com.example;
+                            public class Main {
+                                public static String go() {
+                                    Base b = new Base() {
+                                        public String greet() { return "anon.greet"; }
+                                    };
+                                    return b.hello();
+                                }
+                            }
+                            """);
+
+            // An anonymous class body isn't a TypeDeclaration, so a
+            // TypeDeclaration-based sweep missed it: go() silently went from
+            // "Base.hello" to "anon.greet".
             assertThat(p.expectRefused(ctx ->
                     RenameMethodRefactor.run(ctx, "Base", "hello", "greet", null, true)))
                     .hasMessageContaining("subtype");
@@ -313,6 +350,40 @@ class NameCaptureTest {
 
             assertThat(p.expectRefused(ctx ->
                     RenameClassRefactor.run(ctx, "Gadget", "T", true)))
+                    .hasMessageContaining("already means");
+        }
+
+
+        @Test
+        @DisplayName("an IMPORT of the new name in a referencing file collides after the rename")
+        void refusesCaptureByImportInAnotherFile() {
+            TestProject p = project()
+                    .add("p/Gadget.java", """
+                            package p;
+                            public class Gadget {
+                                public static String tag() { return "p.Gadget"; }
+                            }
+                            """)
+                    .add("q/Widget.java", """
+                            package q;
+                            public class Widget {
+                                public static String tag() { return "q.Widget"; }
+                            }
+                            """)
+                    .add("p/Unused.java", """
+                            package p;
+                            import p.Gadget;
+                            import q.Widget;
+                            public class Unused {
+                                public static String go() { return Widget.tag(); }
+                            }
+                            """);
+
+            // The import of Gadget is itself rewritten, producing
+            // `import p.Widget; import q.Widget;` -- a duplicate single-type
+            // import that javac rejects.
+            assertThat(p.expectRefused(ctx ->
+                    RenameClassRefactor.run(ctx, "Gadget", "Widget", true)))
                     .hasMessageContaining("already means");
         }
 

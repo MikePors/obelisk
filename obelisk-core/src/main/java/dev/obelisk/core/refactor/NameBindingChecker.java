@@ -101,23 +101,29 @@ final class NameBindingChecker {
      * over-cautious in the direction this codebase always chooses, since an
      * over-refusal is a nuisance and an under-refusal is silent breakage.
      */
-    static Optional<String> visibleMethodOn(ResolvedReferenceTypeDeclaration type, String name,
-                                             String excludeQualifiedSignature) {
+    static Optional<String> visibleMethodOn(ResolvedReferenceTypeDeclaration type, String name) {
+        // The declared-methods scan and the ancestor scan get their OWN try
+        // blocks deliberately: sharing one means a failure while walking
+        // ancestors (an unresolvable supertype, say) would also discard the
+        // perfectly good result from the declared scan, silently disabling
+        // the whole check.
         try {
             for (var declared : type.getDeclaredMethods()) {
-                if (declared.getName().equals(name)
-                        && !declared.getQualifiedSignature().equals(excludeQualifiedSignature)) {
+                if (declared.getName().equals(name)) {
                     return Optional.of("a method '" + declared.getQualifiedSignature() + "'");
                 }
             }
+        } catch (RuntimeException e) {
+            // Fall through to the ancestor scan.
+        }
+        try {
             for (var ancestor : type.getAllAncestors()) {
                 var declaration = ancestor.getTypeDeclaration().orElse(null);
                 if (declaration == null) {
                     continue;
                 }
                 for (var inherited : declaration.getDeclaredMethods()) {
-                    if (inherited.getName().equals(name)
-                            && !inherited.getQualifiedSignature().equals(excludeQualifiedSignature)) {
+                    if (inherited.getName().equals(name)) {
                         return Optional.of("an inherited method '" + inherited.getQualifiedSignature() + "'");
                     }
                 }

@@ -177,7 +177,7 @@ public final class RenameClassRefactor {
         }
 
         rejectNewNameAlreadyBoundAtReference(ctx, targetClass, className, newName, typesToRename,
-                annotationsToRename, staticQualifiersToRename);
+                annotationsToRename, staticQualifiersToRename, importsToRename);
 
         Map<Path, String> originalContents = new LinkedHashMap<>();
         originalContents.computeIfAbsent(fileOf(ctx, targetClass.findCompilationUnit().orElseThrow()),
@@ -285,15 +285,6 @@ public final class RenameClassRefactor {
     }
 
     /**
-     * Refuses to rename into a name that would collide with a sibling type
-     * already declared at the same nesting level -- Java disallows two
-     * top-level types with the same simple name in one package (checked
-     * across every file in the project that shares the target's package, NOT
-     * just its own file -- distinct top-level types are almost always
-     * declared one-per-file), or two member types with the same simple name
-     * in one enclosing type.
-     */
-    /**
      * Refuses when {@code newName} ALREADY names a type at some site that
      * references the class being renamed.
      *
@@ -318,12 +309,18 @@ public final class RenameClassRefactor {
                                                                String className, String newName,
                                                                List<ClassOrInterfaceType> typesToRename,
                                                                List<AnnotationExpr> annotationsToRename,
-                                                               List<SimpleName> staticQualifiersToRename) {
+                                                               List<SimpleName> staticQualifiersToRename,
+                                                               Set<ImportDeclaration> importsToRename) {
         List<Node> sites = new ArrayList<>();
         sites.add(targetClass);
         sites.addAll(typesToRename);
         sites.addAll(annotationsToRename);
         sites.addAll(staticQualifiersToRename);
+        // An IMPORT is a site that claims the simple name too, and this
+        // refactor rewrites it -- confirmed by repro that omitting it emitted
+        // `import p.Widget; import q.Widget;` in a file that imported both,
+        // which javac rejects as a duplicate single-type import.
+        sites.addAll(importsToRename);
         for (Node site : sites) {
             NameBindingChecker.typeBindingAt(ctx.typeSolver(), site, newName).ifPresent(bound -> {
                 throw new RefactorException("Cannot rename '" + className + "' to '" + newName + "': that name "
@@ -335,6 +332,15 @@ public final class RenameClassRefactor {
         }
     }
 
+    /**
+     * Refuses to rename into a name that would collide with a sibling type
+     * already declared at the same nesting level -- Java disallows two
+     * top-level types with the same simple name in one package (checked
+     * across every file in the project that shares the target's package, NOT
+     * just its own file -- distinct top-level types are almost always
+     * declared one-per-file), or two member types with the same simple name
+     * in one enclosing type.
+     */
     private static void rejectDuplicateTypeName(ProjectContext ctx, TypeDeclaration<?> targetClass, String newName) {
         if (targetClass.getNameAsString().equals(newName)) {
             throw new RefactorException("'" + newName + "' is already the name of '"

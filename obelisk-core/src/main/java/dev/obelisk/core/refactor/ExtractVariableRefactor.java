@@ -305,13 +305,39 @@ public final class ExtractVariableRefactor {
             if (assign.getOperator() == AssignExpr.Operator.ASSIGN) {
                 continue;
             }
-            if (isWithin(target, assign.getValue())) {
+            if (isWithin(target, assign.getValue()) && isObservableFromElsewhere(assign.getTarget())) {
                 throw new RefactorException("Cannot extract this expression: it's inside the right-hand side of a "
-                        + "compound assignment ('" + assign.getOperator().asString() + "'), which READS its target "
-                        + "before evaluating the right-hand side -- hoisting the expression above the statement "
-                        + "would move its evaluation before that read, which can silently change the result.");
+                        + "compound assignment ('" + assign.getOperator().asString() + "') to something the "
+                        + "expression could itself modify. A compound assignment READS its target before "
+                        + "evaluating the right-hand side, so hoisting the expression above the statement moves "
+                        + "its evaluation before that read, which can silently change the result.");
             }
         }
+    }
+
+    /**
+     * Could the compound assignment's TARGET be modified by something the
+     * right-hand side evaluates? Only then does hoisting the right-hand side
+     * above the target's read actually change anything.
+     *
+     * <p>A plain LOCAL cannot be: Java has no way for a callee to reassign a
+     * caller's local variable, so {@code sum += expensive(x)} is always safe
+     * to extract from -- and is one of the canonical extract-variable sites,
+     * so refusing it on the operator alone was a real usability cost. A
+     * field, an array element, or anything reached through one is a
+     * different matter, and stays refused.
+     */
+    private static boolean isObservableFromElsewhere(Expression assignmentTarget) {
+        if (assignmentTarget instanceof NameExpr name) {
+            try {
+                return name.resolve() instanceof com.github.javaparser.resolution.declarations
+                        .ResolvedFieldDeclaration;
+            } catch (RuntimeException e) {
+                return true;
+            }
+        }
+        // A field access, an array element, or anything else -- assume observable.
+        return true;
     }
 
     /**
@@ -401,6 +427,13 @@ public final class ExtractVariableRefactor {
                     + "context it sits in, and 'var' would infer them from the expression alone (typically as "
                     + "'Object'), which generally won't compile in the original position.");
         }
+        if (target instanceof com.github.javaparser.ast.expr.MethodCallExpr call
+                && returnTypeDependsOnInference(call)) {
+            throw new RefactorException("Cannot extract '" + call + "': it's a generic method call whose type "
+                    + "arguments are inferred from the context it sits in, and 'var' would infer them from the "
+                    + "call alone (typically as 'Object'), which generally won't compile in the original "
+                    + "position.");
+        }
         expectedTypeOf(target).ifPresent(expected -> {
             ResolvedType actual;
             try {
@@ -425,6 +458,73 @@ public final class ExtractVariableRefactor {
      * return, ...), which simply means {@link #rejectTargetTypedInitializer}
      * makes no claim there.
      */
+    /**
+     * Does {@code call}'s return type mention one of the method's OWN type
+     * parameters? If so its type arguments are inferred, and in an
+     * assignment context they are inferred from the TARGET type -- so
+     * {@code List<String> l = Collections.emptyList();} works while
+     * {@code var t = Collections.emptyList();} infers {@code List<Object>}.
+     *
+     * <p>Checked structurally rather than by comparing resolved types, for
+     * exactly the reason the diamond is: the resolver reports the
+     * target-typed answer, so a type comparison sees {@code List<String>} on
+     * both sides and finds nothing wrong. Confirmed by repro for {@code
+     * Collections.emptyList()}, {@code Optional.empty()} and {@code
+     * List.of()}, all of which previously emitted uncompilable code.
+     */
+    private static boolean returnTypeDependsOnInference(com.github.javaparser.ast.expr.MethodCallExpr call) {
+        if (call.getTypeArguments().isPresent()) {
+            // Explicit witness (`Collections.<String>emptyList()`) -- nothing
+            // is left to infer from context.
+            return false;
+        }
+        try {
+            var resolved = call.resolve();
+            if (resolved.getTypeParameters().isEmpty()) {
+                return false;
+            }
+            Set<String> ownTypeParameters = new HashSet<>();
+            resolved.getTypeParameters().forEach(tp -> ownTypeParameters.add(tp.getName()));
+            return mentionsAny(resolved.getReturnType(), ownTypeParameters);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private static boolean mentionsAny(ResolvedType type, Set<String> typeParameterNames) {
+        if (type.isTypeVariable()) {
+            return typeParameterNames.contains(type.asTypeVariable().describe());
+        }
+        if (type.isArray()) {
+            return mentionsAny(type.asArrayType().getComponentType(), typeParameterNames);
+        }
+        if (type.isReferenceType()) {
+            return type.asReferenceType().typeParametersValues().stream()
+                    .anyMatch(t -> mentionsAny(t, typeParameterNames));
+        }
+        return false;
+    }
+
+    /**
+     * The type the context expects of {@code target}, where that is
+     * determinable: a variable initializer, the right-hand side of a plain
+     * assignment, or a {@code return}. Empty elsewhere, which simply means
+     * {@link #rejectTargetTypedInitializer} makes no claim there.
+     *
+     * <p><b>An ARGUMENT position is deliberately not covered, and cannot
+     * usefully be.</b> Getting the parameter's declared type requires
+     * resolving the call -- but if the call RESOLVES, the resolver already
+     * found the method applicable to that argument type, so the conversion
+     * involved is a widening or boxing one and {@code isAssignableBy} will
+     * say yes; the check could never fire. And in the one case it would want
+     * to fire -- a constant narrowing like {@code takesByte(5)} -- JavaParser
+     * cannot resolve the call at all, because it doesn't model JLS 5.2's
+     * constant-expression narrowing during applicability. Confirmed by
+     * direct probe ({@code UnsolvedSymbolException} for {@code
+     * takesByte(5)}). So the branch would be dead code at best, and an
+     * over-refusal on boxing at worst. Extracting a constant out of an
+     * argument position that narrows it therefore remains a known gap.
+     */
     private static Optional<ResolvedType> expectedTypeOf(Expression target) {
         Node parent = target.getParentNode().orElse(null);
         try {
@@ -439,6 +539,15 @@ public final class ExtractVariableRefactor {
                     && assign.getOperator() == AssignExpr.Operator.ASSIGN
                     && assign.getValue() == target) {
                 return Optional.of(assign.getTarget().calculateResolvedType());
+            }
+            // `return 5;` in a byte-returning method applies the same
+            // assignment conversion a `byte b = 5;` initializer does.
+            if (parent instanceof com.github.javaparser.ast.stmt.ReturnStmt) {
+                var enclosing = target.findAncestor(CallableDeclaration.class).orElse(null);
+                if (enclosing instanceof com.github.javaparser.ast.body.MethodDeclaration method) {
+                    return Optional.of(method.getType().resolve());
+                }
+                return Optional.empty();
             }
         } catch (RuntimeException e) {
             return Optional.empty();

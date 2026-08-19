@@ -95,7 +95,7 @@ public final class RenameMethodRefactor {
             member.findAncestor(TypeDeclaration.class).ifPresent(owner ->
                     rejectDuplicateSignature(castTypeDeclaration(owner), newName, paramsSuffix, oldName));
         }
-        rejectNewNameAlreadyVisible(familyDeclarations, familySignatures, oldName, newName);
+        rejectNewNameAlreadyVisible(familyDeclarations, oldName, newName);
         rejectNewNameDeclaredBySubtype(ctx, ownerQualifiedName, familySignatures, oldName, newName);
 
         // Resolve every matching call site / method reference against the
@@ -279,7 +279,7 @@ public final class RenameMethodRefactor {
         // walks ancestors; this one did not.
         ancestor.ifPresent(enclosing -> {
             try {
-                NameBindingChecker.visibleMethodOn(enclosing.resolve(), newName, "").ifPresent(bound -> {
+                NameBindingChecker.visibleMethodOn(enclosing.resolve(), newName).ifPresent(bound -> {
                     throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': "
                             + bound + " is already visible on '" + enclosing.getNameAsString()
                             + "', which contains an unqualified call to '" + oldName + "' at "
@@ -349,7 +349,7 @@ public final class RenameMethodRefactor {
      * Over-refusal is the direction this codebase always chooses.
      */
     private static void rejectNewNameAlreadyVisible(List<MethodDeclaration> familyDeclarations,
-                                                      Set<String> familySignatures, String oldName, String newName) {
+                                                      String oldName, String newName) {
         for (MethodDeclaration member : familyDeclarations) {
             ResolvedReferenceTypeDeclaration owner;
             try {
@@ -357,15 +357,15 @@ public final class RenameMethodRefactor {
             } catch (RuntimeException e) {
                 continue;
             }
-            for (String familySignature : familySignatures) {
-                NameBindingChecker.visibleMethodOn(owner, newName, familySignature).ifPresent(bound -> {
+            // Every family member is named oldName while this searches for
+            // newName, so no family signature can match -- no exclusion needed.
+            NameBindingChecker.visibleMethodOn(owner, newName).ifPresent(bound -> {
                     throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': "
                             + bound + " is already visible on '" + owner.getQualifiedName() + "'. Renaming would "
                             + "either make a call site silently select that other method instead (overload "
                             + "resolution picks the most specific applicable one, not the one you meant), or turn "
                             + "this declaration into an accidental override of it. Not supported in this version.");
-                });
-            }
+            });
         }
     }
 
@@ -383,31 +383,42 @@ public final class RenameMethodRefactor {
     private static void rejectNewNameDeclaredBySubtype(ProjectContext ctx, String ownerQualifiedName,
                                                          Set<String> familySignatures, String oldName,
                                                          String newName) {
+        // Scans every MethodDeclaration directly rather than walking named
+        // TypeDeclarations, for exactly the reason findOverrides documents:
+        // an ANONYMOUS class body hangs off an ObjectCreationExpr and an ENUM
+        // CONSTANT body off an EnumConstantDeclaration, neither of which is a
+        // TypeDeclaration -- so a TypeDeclaration-based sweep silently misses
+        // both. Confirmed by repro: `Base b = new Base() { String greet() {
+        // ... } };` let `Base.hello` be renamed to `greet`, and the call
+        // `b.hello()` silently started dispatching to the anonymous class's
+        // method. `candidate.resolve()` works from AST position regardless of
+        // whether the enclosing type has a name.
         for (CompilationUnit cu : ctx.unitsByFile().values()) {
-            for (TypeDeclaration<?> type : cu.findAll(TypeDeclaration.class)) {
-                ResolvedReferenceTypeDeclaration resolved;
+            for (MethodDeclaration candidate : cu.findAll(MethodDeclaration.class)) {
+                if (!candidate.getNameAsString().equals(newName)) {
+                    continue;
+                }
                 try {
-                    resolved = type.resolve();
-                    if (resolved.getQualifiedName().equals(ownerQualifiedName)
-                            || resolved.getAllAncestors().stream()
-                                    .noneMatch(a -> a.getQualifiedName().equals(ownerQualifiedName))) {
+                    ResolvedMethodDeclaration resolvedCandidate = candidate.resolve();
+                    if (familySignatures.contains(resolvedCandidate.getQualifiedSignature())) {
                         continue;
                     }
-                    for (var declared : resolved.getDeclaredMethods()) {
-                        if (declared.getName().equals(newName)
-                                && !familySignatures.contains(declared.getQualifiedSignature())) {
-                            throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
-                                    + resolved.getQualifiedName() + "' is a subtype of '" + ownerQualifiedName
-                                    + "' and already declares '" + declared.getQualifiedSignature() + "'. Renaming "
-                                    + "would silently turn that unrelated method into an override, so calls made "
-                                    + "through a supertype reference would start dispatching to it. Not supported "
-                                    + "in this version.");
-                        }
+                    ResolvedReferenceTypeDeclaration declaringType = resolvedCandidate.declaringType();
+                    boolean isSubtype = declaringType.getAllAncestors().stream()
+                            .anyMatch(a -> a.getQualifiedName().equals(ownerQualifiedName));
+                    if (!isSubtype) {
+                        continue;
                     }
+                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+                            + declaringType.getQualifiedName() + "' is a subtype of '" + ownerQualifiedName
+                            + "' and already declares '" + resolvedCandidate.getQualifiedSignature() + "'. Renaming "
+                            + "would silently turn that unrelated method into an override, so calls made "
+                            + "through a supertype reference would start dispatching to it. Not supported "
+                            + "in this version.");
                 } catch (RefactorException e) {
                     throw e;
                 } catch (RuntimeException e) {
-                    // Unresolvable type -- can't be a subtype we need to worry about.
+                    // Unresolvable candidate -- can't confirm it's a subtype's method.
                 }
             }
         }

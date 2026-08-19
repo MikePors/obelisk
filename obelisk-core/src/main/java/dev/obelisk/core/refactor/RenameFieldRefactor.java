@@ -262,11 +262,6 @@ public final class RenameFieldRefactor {
     }
 
     /**
-     * Refuses to rename into a name that would collide with another field
-     * already declared directly on the same type -- Java disallows two
-     * fields with the same name in one type.
-     */
-    /**
      * Refuses when {@code newName} ALREADY binds to something at the field's
      * own declaration site -- an inherited field, a static-imported field,
      * or an enum constant.
@@ -296,6 +291,11 @@ public final class RenameFieldRefactor {
         });
     }
 
+    /**
+     * Refuses to rename into a name that would collide with another field
+     * already declared directly on the same type -- Java disallows two
+     * fields with the same name in one type.
+     */
     private static void rejectDuplicateFieldName(TypeDeclaration<?> targetClass, VariableDeclarator targetField,
                                                    String newName, String oldName) {
         for (BodyDeclaration<?> member : targetClass.getMembers()) {

@@ -355,3 +355,72 @@ twice before in inline-method. Enum constants share a name space with
 fields.
 
 All twelve findings are now closed, with a test each.
+
+## 8. Reviewing the fixes, and making mutation testing systematic
+
+The fixes in §7 were themselves reviewed. The core held up — every new check
+was pinned by the test claiming it, and the deliberately-broad checks did not
+make any refactor unusable on ordinary code. But four fixes were
+**incomplete in the same way**, and it is worth recording why, because it is
+the same mistake this document is about:
+
+> Each hazard was fixed at the SHAPE the reviewer demonstrated, rather than
+> at the level the hazard actually lives.
+
+- A named subclass was shown; named subclasses were handled. An **anonymous**
+  subclass is the same hazard — and `findOverrides`, twenty lines away in the
+  same file, already scans `MethodDeclaration` directly *precisely because*
+  anonymous and enum-constant bodies are not `TypeDeclaration`s, with a
+  Javadoc saying so.
+- A diamond was shown; diamonds were handled. A **generic method**
+  (`Collections.emptyList()`) is the same hazard, and the fix's own Javadoc
+  articulated the reasoning that applies to it.
+- A variable initializer was shown; initializers and assignments were
+  handled. A **`return`** is the same hazard.
+- The rename-class fix listed three kinds of reference site but not
+  **imports**, which the same refactor rewrites.
+
+All four are now fixed at the property level.
+
+### 8.1 One recommendation reversed by testing
+
+The review also suggested covering ARGUMENT positions in `expectedTypeOf`.
+Building it showed it cannot work, for two independent reasons: JavaParser
+throws `UnsolvedSymbolException` on `takesByte(5)` because it does not model
+JLS 5.2 constant narrowing during applicability; and where a call *does*
+resolve, the resolver already found it applicable, so `isAssignableBy` is
+true and the branch could never fire. It would have been dead code at best
+and an over-refusal on boxing at worst. Removed, and the gap documented
+instead of papered over.
+
+### 8.2 `tools/mutation-check.sh`
+
+The review found a test that passed **with its check disabled** — the
+enum-constant test, satisfied by a different check whose error message
+happened to share the asserted words. No amount of reading catches that; only
+mutation does.
+
+So it is now a script rather than an ad-hoc habit. It disables each
+`reject*` call in turn, runs the suite, and reports whether anything noticed.
+A check reported as SURVIVED is either untested, or tested only by a test
+that some other check also satisfies.
+
+First full run: **28 killed, 15 survived.** All the checks added in §7 were
+killed. The survivors are pre-existing gaps, and split into two kinds worth
+distinguishing:
+
+- **Genuinely untested** — most of extract-variable's original position
+  checks (`rejectUnhoistablePosition`, `rejectRecurringControlPosition`,
+  `rejectAssertPosition`, `rejectForwardReference`, `rejectLvaluePosition`,
+  `rejectUnsuitableInitializer`, `rejectNonValueExpression`), and several
+  inline-method body checks (`rejectSelfRecursion`, `rejectParameterWrites`,
+  `rejectDeferredEvaluationConstructs`, `rejectMutatingOrCallExpressions`,
+  `rejectUnsafeReceiver`).
+- **Shadowed by a newer check** — `rejectDuplicateTypeName` and
+  rename-field's `rejectShadowingCollision` now have their cases caught first
+  by the §7 additions, so no test can tell the two apart. Redundant coverage
+  is not a defect, but it does mean deleting the older check would go
+  unnoticed.
+
+The script exits non-zero while any check survives, so this is a standing
+signal rather than a one-off measurement.

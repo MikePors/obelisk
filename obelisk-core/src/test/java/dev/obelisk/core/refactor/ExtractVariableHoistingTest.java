@@ -208,4 +208,86 @@ class ExtractVariableHoistingTest {
         assertThat(p.source("com/example/Main.java")).contains("var made = new ArrayList<String>();");
         p.assertCompiles();
     }
+
+    @Test
+    @DisplayName("a generic method's type arguments come from context, same as a diamond")
+    void refusesTargetTypedGenericMethod() {
+        TestProject p = project().add("com/example/Main.java", """
+                package com.example;
+                import java.util.List;
+                public class Main {
+                    public static int go() {
+                        List<String> b = java.util.Collections.emptyList();
+                        return b.size();
+                    }
+                }
+                """);
+
+        // `Collections.emptyList()` on line 5. Comparing resolved types can't
+        // catch this -- the resolver reports the target-typed List<String> on
+        // both sides -- so it's refused structurally, like the diamond.
+        assertThat(p.expectRefused(ctx ->
+                ExtractVariableRefactor.run(ctx, mainFile(), 5, 26, 5, 58, "empty", true)))
+                .hasMessageContaining("inferred from the context");
+    }
+
+    @Test
+    @DisplayName("a return position applies an assignment conversion too")
+    void refusesNarrowingInReturnPosition() {
+        TestProject p = project().add("com/example/Main.java", """
+                package com.example;
+                public class Main {
+                    public static byte go() {
+                        return 5;
+                    }
+                }
+                """);
+
+        assertThat(p.expectRefused(ctx ->
+                ExtractVariableRefactor.run(ctx, mainFile(), 4, 16, 4, 16, "zz", true)))
+                .hasMessageContaining("isn't assignable");
+    }
+
+    @Test
+    @DisplayName("an explicit type witness leaves nothing to infer, so it stays allowed")
+    void allowsExplicitTypeWitness() {
+        TestProject p = project().add("com/example/Main.java", """
+                package com.example;
+                import java.util.List;
+                public class Main {
+                    public static int go() {
+                        List<String> c = java.util.Collections.<String>emptyList();
+                        return c.size();
+                    }
+                }
+                """);
+
+        p.run(ctx -> ExtractVariableRefactor.run(ctx, mainFile(), 5, 26, 5, 66, "empty", true));
+
+        assertThat(p.source("com/example/Main.java")).contains("var empty = java.util.Collections.<String>emptyList();");
+        p.assertCompiles();
+    }
+
+    @Test
+    @DisplayName("compound assignment to a LOCAL is safe -- a callee can't touch a caller's local")
+    void allowsCompoundAssignmentToLocal() {
+        TestProject p = project().add("com/example/Main.java", """
+                package com.example;
+                public class Main {
+                    static int compute(int n) { return n + 3; }
+                    public static int go() {
+                        int sum = 0;
+                        sum += compute(3);
+                        return sum;
+                    }
+                }
+                """);
+
+        p.run(ctx -> ExtractVariableRefactor.run(ctx, mainFile(), 6, 16, 6, 25, "part", true));
+
+        assertThat(p.source("com/example/Main.java"))
+                .contains("var part = compute(3);")
+                .contains("sum += part;");
+        p.assertCompiles();
+    }
 }

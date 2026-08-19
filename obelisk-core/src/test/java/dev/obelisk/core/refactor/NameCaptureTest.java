@@ -269,9 +269,13 @@ class NameCaptureTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(Check.REJECT_SHADOWING_COLLISION, ctx ->
-                    RenameMethodRefactor.run(ctx, "Util", "log", "report", null, true)))
-                    .hasMessageContaining("resolve that call against the enclosing class hierarchy first");
+            // REPAIRED, not refused: the call is qualified so it keeps
+            // reaching Util.log. Without that it would silently bind to
+            // Base.report, since Java resolves the enclosing class hierarchy
+            // before static imports.
+            p.run(ctx -> RenameMethodRefactor.run(ctx, "Util", "log", "report", null, true));
+            assertThat(p.source("com/example/Sub.java")).contains("com.example.Util.report(\"x\")");
+            p.assertCompiles();
         }
 
         @Test

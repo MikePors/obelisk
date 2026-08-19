@@ -8,7 +8,10 @@ import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.expr.Expression;
+import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
+import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.MethodReferenceExpr;
 import com.github.javaparser.ast.expr.Name;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
@@ -30,6 +33,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -109,6 +113,11 @@ public final class RenameMethodRefactor {
         // referencing the old name (e.g. a self-call inside the same class),
         // so nothing is mutated until this whole pass completes.
         List<MethodCallExpr> callsToRename = new ArrayList<>();
+        // IDENTITY map: JavaParser's Node.equals is structural, so two
+        // identical-looking calls would collide in a HashMap and one site's
+        // repair would be applied to another (the same trap that made
+        // rename-field over-qualify every reference).
+        Map<MethodCallExpr, String> callsNeedingQualification = new IdentityHashMap<>();
         List<MethodReferenceExpr> refsToRename = new ArrayList<>();
 
         for (CompilationUnit cu : ctx.unitsByFile().values()) {
@@ -121,18 +130,16 @@ public final class RenameMethodRefactor {
                     continue;
                 }
                 callsToRename.add(call);
-                if (call.getScope().isEmpty()) {
-                    // An unqualified call: Java's lookup order tries the
-                    // enclosing class hierarchy (self-calls, inherited members)
-                    // *before* single-static-imports. If the enclosing type
-                    // already declares a method named newName with the SAME
-                    // parameter list this call needs, renaming would silently
-                    // get shadowed by that member instead of reaching the
-                    // intended target -- refuse rather than produce code that
-                    // quietly means something else. (A newName method with a
-                    // DIFFERENT parameter list is just a legal new overload and
-                    // is not refused.)
+                if (call.getScope().isEmpty() && isShadowedAfterRename(call, resolved, newName)) {
+                    // An unqualified call whose new name the enclosing scope
+                    // already means something by. That is a BINDING hazard,
+                    // so it is REPAIRED by qualifying the call rather than
+                    // refused -- `Util.report(x)` cannot be captured by an
+                    // inherited or anonymous-class method the way a bare
+                    // `report(x)` can. Only a static target is repairable;
+                    // rejectShadowingCollision refuses the rest.
                     rejectShadowingCollision(call, resolved, newName, oldName);
+                    callsNeedingQualification.put(call, resolved.declaringType().getQualifiedName());
                 }
             }
 
@@ -184,6 +191,10 @@ public final class RenameMethodRefactor {
         for (MethodCallExpr call : callsToRename) {
             call.getName().setIdentifier(newName);
         }
+        // REPAIR: qualify the calls a same-named member would have captured.
+        for (Map.Entry<MethodCallExpr, String> entry : callsNeedingQualification.entrySet()) {
+            qualifyShadowedCall(entry.getKey(), entry.getValue());
+        }
         for (MethodReferenceExpr ref : refsToRename) {
             ref.setIdentifier(newName);
         }
@@ -192,6 +203,7 @@ public final class RenameMethodRefactor {
             // originally reached the method through a subclass name.
             imp.setName(qualifiedName(ownerQualifiedName + "." + newName));
         }
+        verifyQualifiedCalls(ctx, callsNeedingQualification, oldName, newName);
 
         List<Path> changedFiles = new ArrayList<>();
         Map<Path, String> diffs = new LinkedHashMap<>();
@@ -268,85 +280,164 @@ public final class RenameMethodRefactor {
      * for definitely-correct renames), so verification here deliberately
      * avoids relying on it.
      */
-    @Guard(Check.REJECT_SHADOWING_COLLISION)
-    private static void rejectShadowingCollision(MethodCallExpr call, ResolvedMethodDeclaration resolvedCall,
-                                                   String newName, String oldName) {
-        List<ResolvedType> callParams = resolvedCall.formalParameterTypes();
-        Optional<TypeDeclaration<?>> ancestor = call.findAncestor(TypeDeclaration.class)
-                .map(RenameMethodRefactor::castTypeDeclaration);
-        // An ANONYMOUS class body is not a TypeDeclaration, so the
-        // findAncestor below skips straight past it to the enclosing named
-        // type -- missing any method the anonymous class itself declares.
-        // Confirmed by repro: an unqualified statically-imported log("x")
-        // inside `new Object() { String report(String s) {...} }` silently
-        // switched from Util.log to the anonymous class's own report once
-        // log was renamed to report, compiling cleanly.
+    /**
+     * Would this unqualified call be captured by something named {@code
+     * newName} once the rename lands? Reports a fact; it refuses nothing, so
+     * per the naming convention it is not a {@code reject*}.
+     *
+     * <p>Three ways that happens, all confirmed by repro: an ANONYMOUS class
+     * body between the call and its enclosing type declaring its own {@code
+     * newName}; an INHERITED method of that name visible on the enclosing
+     * type (Java resolves the enclosing class hierarchy before static
+     * imports); or the enclosing type declaring one directly with a matching
+     * parameter list.
+     */
+    private static boolean isShadowedAfterRename(MethodCallExpr call, ResolvedMethodDeclaration resolvedCall,
+                                                   String newName) {
         for (Node up = call; up != null; up = up.getParentNode().orElse(null)) {
             if (up instanceof TypeDeclaration) {
                 break;
             }
-            if (up instanceof com.github.javaparser.ast.expr.ObjectCreationExpr creation) {
-                boolean declaresNewName = creation.getAnonymousClassBody()
-                        .map(body -> body.stream()
-                                .anyMatch(m -> m instanceof MethodDeclaration method
-                                        && method.getNameAsString().equals(newName)))
-                        .orElse(false);
-                if (declaresNewName) {
-                    throw new RefactorException(Check.REJECT_SHADOWING_COLLISION, "Cannot rename '" + oldName + "' to '" + newName + "': the "
-                            + "anonymous class containing an unqualified call to '" + oldName + "' at "
-                            + call.getBegin().map(Object::toString).orElse("?") + " declares its own '" + newName
-                            + "', which would silently take priority over the intended call after the rename.");
-                }
+            if (up instanceof com.github.javaparser.ast.expr.ObjectCreationExpr creation
+                    && creation.getAnonymousClassBody()
+                            .map(body -> body.stream().anyMatch(m -> m instanceof MethodDeclaration method
+                                    && method.getNameAsString().equals(newName)))
+                            .orElse(false)) {
+                return true;
             }
         }
-
-        // An INHERITED method named newName shadows the call just as surely
-        // as a declared one, and `enclosing.getMethods()` below only returns
-        // methods declared directly on the enclosing type. Confirmed by
-        // repro: a class extending a Base that declares `report(String)`,
-        // containing an unqualified statically-imported `log("x")`, silently
-        // switched from `Util.log` to `Base.report` once `log` was renamed
-        // to `report` -- Java resolves the enclosing class hierarchy before
-        // static imports. RenameFieldRefactor's equivalent check already
-        // walks ancestors; this one did not.
-        ancestor.ifPresent(enclosing -> {
+        Optional<TypeDeclaration<?>> ancestor = call.findAncestor(TypeDeclaration.class)
+                .map(RenameMethodRefactor::castTypeDeclaration);
+        if (ancestor.isEmpty()) {
+            return false;
+        }
+        TypeDeclaration<?> enclosing = ancestor.get();
+        try {
+            if (NameBindingChecker.visibleMethodOn(enclosing.resolve(), enclosing, newName).isPresent()) {
+                return true;
+            }
+        } catch (RuntimeException ignored) {
+            // Fall through to the narrower declared-methods check.
+        }
+        List<ResolvedType> callParams;
+        try {
+            callParams = resolvedCall.formalParameterTypes();
+        } catch (RuntimeException e) {
+            return false;
+        }
+        for (MethodDeclaration candidate : enclosing.getMethods()) {
+            if (!candidate.getNameAsString().equals(newName)) {
+                continue;
+            }
             try {
-                NameBindingChecker.visibleMethodOn(enclosing.resolve(), enclosing, newName).ifPresent(bound -> {
-                    throw new RefactorException(Check.REJECT_SHADOWING_COLLISION, "Cannot rename '" + oldName + "' to '" + newName + "': "
-                            + bound + " is already visible on '" + enclosing.getNameAsString()
-                            + "', which contains an unqualified call to '" + oldName + "' at "
-                            + call.getBegin().map(Object::toString).orElse("?") + ". After the rename Java would "
-                            + "resolve that call against the enclosing class hierarchy first, silently reaching "
-                            + "the other method instead. Not supported in this version.");
-                });
-            } catch (RefactorException e) {
-                throw e;
-            } catch (RuntimeException e) {
-                // Can't resolve the enclosing type -- fall through to the
-                // narrower declared-methods check below.
-            }
-        });
-        ancestor.ifPresent(enclosing -> {
-            for (MethodDeclaration candidate : enclosing.getMethods()) {
-                if (!candidate.getNameAsString().equals(newName)) {
-                    continue;
+                if (paramsMatch(candidate.resolve().formalParameterTypes(), callParams)) {
+                    return true;
                 }
-                try {
-                    if (paramsMatch(candidate.resolve().formalParameterTypes(), callParams)) {
-                        throw new RefactorException(Check.REJECT_SHADOWING_COLLISION, "Cannot rename '" + oldName + "' to '" + newName + "': '"
-                                + enclosing.getNameAsString() + "' (containing an unqualified call to '" + oldName
-                                + "' at " + call.getBegin().map(Object::toString).orElse("?")
-                                + ") already declares its own '" + newName
-                                + "' method with the same parameter list, which would silently take priority "
-                                + "over the intended call after the rename.");
-                    }
-                } catch (RefactorException e) {
-                    throw e;
-                } catch (RuntimeException e) {
-                    // Can't resolve the existing candidate -- not this call's problem.
-                }
+            } catch (RuntimeException ignored) {
+                // Unresolvable candidate -- not this call's problem.
             }
-        });
+        }
+        return false;
+    }
+
+    /**
+     * Qualifies a call that would otherwise be captured, so it keeps
+     * reaching the method it reaches today.
+     *
+     * <p>A freshly CONSTRUCTED scope node, not a clone -- {@code
+     * LexicalPreservingPrinter} prints stale pre-mutation text for cloned
+     * nodes (documented at length on {@code InlineMethodRefactor.planInline}).
+     */
+    private static void qualifyShadowedCall(MethodCallExpr call, String declaringTypeQualifiedName) {
+        // The FULLY-qualified name, not the simple one. A call reached via a
+        // static member import has no type import for its owner, so `Util.x`
+        // does not resolve there at all -- caught by verifyQualifiedCalls on
+        // the first repair it guarded, before anything was written.
+        String[] parts = declaringTypeQualifiedName.split("\\.");
+        Expression scope = new NameExpr(parts[0]);
+        for (int i = 1; i < parts.length; i++) {
+            scope = new FieldAccessExpr(scope, parts[i]);
+        }
+        call.setScope(scope);
+    }
+
+    /**
+     * Proves each repaired call's new qualifier names a type that really
+     * does declare the renamed method.
+     *
+     * <p><b>What this can and cannot check.</b> The natural verification --
+     * re-resolve the rewritten call and confirm it reaches the same method
+     * -- is not available: JavaParser cannot resolve a call whose scope is a
+     * package-qualified name, returning "unable to find the method
+     * declaration" for {@code com.example.Util.report("x")} even though
+     * javac accepts it. Confirmed by direct repro, and the same resolver
+     * limitation that blocked a fully-qualified field access in
+     * rename-field.
+     *
+     * <p>So this verifies the half that is checkable: the qualifier resolves
+     * to a real type, and that type declares a method of the new name. The
+     * other half -- that the emitted call compiles and reaches it -- is
+     * covered by tests, which run the real javac via
+     * {@code TestProject.assertCompiles()} and compare program output before
+     * and after. That is weaker than the in-process verification the other
+     * repairs get, and is recorded here rather than glossed over.
+     */
+    @Guard(Check.VERIFY_QUALIFIED_CALLS)
+    private static void verifyQualifiedCalls(ProjectContext ctx, Map<MethodCallExpr, String> repaired,
+                                               String oldName, String newName) {
+        for (Map.Entry<MethodCallExpr, String> entry : repaired.entrySet()) {
+            String qualifiedType = entry.getValue();
+            // Against the IN-MEMORY units, not ctx.typeSolver(): the solver
+            // reads source from disk, which at this point still holds the
+            // pre-rename text, so it would report the method missing every
+            // time. Caught by this check failing on its own first repair.
+            Optional<TypeDeclaration<?>> declaration = ctx.unitsByFile().values().stream()
+                    .flatMap(cu -> cu.findAll(TypeDeclaration.class).stream())
+                    .filter(t -> t.getFullyQualifiedName().filter(qualifiedType::equals).isPresent())
+                    .map(RenameMethodRefactor::castTypeDeclaration)
+                    .findFirst();
+            if (declaration.isEmpty()) {
+                throw new RefactorException(Check.VERIFY_QUALIFIED_CALLS, "Refusing to rename '" + oldName
+                        + "' to '" + newName + "': the call at "
+                        + entry.getKey().getBegin().map(Object::toString).orElse("?") + " was qualified with '"
+                        + qualifiedType + "', which is not a type in this project. Nothing has been written.");
+            }
+            boolean declaresIt = declaration.get().getMethods().stream()
+                    .anyMatch(m -> m.getNameAsString().equals(newName));
+            if (!declaresIt) {
+                throw new RefactorException(Check.VERIFY_QUALIFIED_CALLS, "Refusing to rename '" + oldName
+                        + "' to '" + newName + "': the call at "
+                        + entry.getKey().getBegin().map(Object::toString).orElse("?") + " was qualified with '"
+                        + qualifiedType + "', which declares no method named '" + newName
+                        + "'. Nothing has been written.");
+            }
+        }
+    }
+
+    /**
+     * Refuses a shadowed call that CANNOT be repaired by qualifying it.
+     *
+     * <p>A STATIC target is always qualifiable with its declaring type, and
+     * is repaired rather than refused. An INSTANCE target is not: the right
+     * receiver depends on whether the target is declared on the enclosing
+     * type ({@code this.}), inherited and now hidden ({@code super.}), or
+     * reached from an inner class ({@code Outer.this.}) -- and {@code super}
+     * does not work for statics or through interfaces at all. Rather than
+     * guess, refuse, exactly as rename-field refuses hierarchy hiding for
+     * the same reason.
+     */
+    @Guard(Check.REJECT_SHADOWING_COLLISION)
+    private static void rejectShadowingCollision(MethodCallExpr call, ResolvedMethodDeclaration resolvedCall,
+                                                   String newName, String oldName) {
+        if (resolvedCall.isStatic()) {
+            return;
+        }
+        throw new RefactorException(Check.REJECT_SHADOWING_COLLISION, "Cannot rename '" + oldName + "' to '"
+                + newName + "': the unqualified call at " + call.getBegin().map(Object::toString).orElse("?")
+                + " would be captured by something already named '" + newName + "' in that scope, and it calls an "
+                + "INSTANCE method, which this refactor cannot safely qualify -- the correct receiver depends on "
+                + "whether the target is declared, inherited, or reached from an inner class. Not supported in "
+                + "this version.");
     }
 
     /**

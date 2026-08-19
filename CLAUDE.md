@@ -39,13 +39,18 @@ problems. Binding problems are the repair case. Stop and write the repair.
 
 ### Known backlog — refusals that should become repairs
 
-**Done:** rename-field's local/parameter/pattern capture — the reference is
-qualified (`this.count`, or `Config.count` for a static) instead of refused.
+**Done:** rename-field's local/parameter/pattern capture (qualify the
+reference: `this.count`, or `Config.count` for a static); rename-method's
+shadowed unqualified call to a STATIC target (qualify with the declaring
+type's FQN).
 
-**Still refusals, repairable:** `rejectNewNameAlreadyBound`, rename-method's
-`rejectShadowingCollision` (qualify the call), and
-`rejectNewNameAlreadyBoundAtReference` (qualify the type reference), plus
+**Still refusals, repairable:** `rejectNewNameAlreadyBound`,
+`rejectNewNameAlreadyBoundAtReference` (qualify the type reference), and
 extract-variable's `rejectNameCollision`.
+
+Also not repairable: a shadowed call to an INSTANCE method — the right
+receiver depends on whether the target is declared, inherited, or reached
+from an inner class, and `super` fails for statics and through interfaces.
 
 **Genuinely NOT repairable, leave them:** `rejectNewNameDeclaredBySubtype`
 and `rejectNewNameAlreadyVisible`'s override half — you cannot qualify away

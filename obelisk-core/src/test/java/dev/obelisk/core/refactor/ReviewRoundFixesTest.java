@@ -393,9 +393,11 @@ class ReviewRoundFixesTest {
             // An anonymous class body is not a TypeDeclaration, so
             // findAncestor(TypeDeclaration.class) skipped past it to Main.
             // Output silently went from "Util.log:x" to "anon.report:x".
-            assertThat(p.expectRefused(Check.REJECT_SHADOWING_COLLISION, ctx ->
-                    RenameMethodRefactor.run(ctx, "Util", "log", "report", null, true)))
-                    .hasMessageContaining("the anonymous class containing an unqualified call");
+            // REPAIRED, not refused: qualifying the call keeps it reaching
+            // Util.log rather than the anonymous class's own report.
+            p.run(ctx -> RenameMethodRefactor.run(ctx, "Util", "log", "report", null, true));
+            assertThat(p.source("com/example/Main.java")).contains("com.example.Util.report(\"x\")");
+            p.assertCompiles();
         }
 
         @Test

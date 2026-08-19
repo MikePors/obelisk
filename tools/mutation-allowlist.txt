@@ -42,7 +42,6 @@
 InlineMethodRefactor.java|rejectSelfRecursion       # a self-call is a MethodCallExpr, banned by rejectMutatingOrCallExpressions
 InlineMethodRefactor.java|rejectParameterWrites     # an assignment / ++ is banned by rejectMutatingOrCallExpressions
 InlineMethodRefactor.java|rejectDeferredEvaluationConstructs  # lambda half: a lambda-valued body always fails rejectReturnTypeConversion, whose resolver cannot type a lambda. method-reference half: a bare `s::length` body is refused by rejectFreeReferences as a type reference
-RenameClassRefactor.java|rejectDuplicateTypeName    # a sibling type in the same package also resolves at the declaration site, so rejectNewNameAlreadyBoundAtReference catches it
 RenameMethodRefactor.java|rejectDuplicateSignature  # requires name AND matching parameter list on the owner's declared methods; rejectNewNameAlreadyVisible refuses on the bare name alone, against the same owners, so this is a strict subset
 
 # --- (b) BACKSTOPS: unreachable while every precondition holds ---

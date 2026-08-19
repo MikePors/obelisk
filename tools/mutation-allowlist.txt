@@ -1,0 +1,21 @@
+# Checks that mutation-check.sh will always report as SURVIVED, because a
+# BROADER check catches the same cases first. Each is genuine redundancy, not
+# a coverage gap -- no test can distinguish them, because disabling one still
+# leaves the case refused.
+#
+# Format: <SourceFile.java>|<start of the call>   # why it is subsumed
+#
+# Keeping the redundant checks is deliberate: they give a more specific error
+# message than the broad check would ("its body calls itself" beats "its body
+# calls a method"), and they remain a safety net if the broader check is ever
+# narrowed. But that means their protection is untestable today, and this file
+# is the record of which ones and why.
+#
+# Adding an entry here should always be a considered decision. A NEW survivor
+# that is not on this list fails the run -- that is the signal worth having.
+
+InlineMethodRefactor.java|rejectSelfRecursion       # a self-call is a MethodCallExpr, banned by rejectMutatingOrCallExpressions
+InlineMethodRefactor.java|rejectParameterWrites     # an assignment / ++ is banned by rejectMutatingOrCallExpressions
+InlineMethodRefactor.java|rejectDeferredEvaluationConstructs  # a lambda-valued body always fails rejectReturnTypeConversion, whose resolver cannot type a lambda
+RenameClassRefactor.java|rejectDuplicateTypeName    # a sibling type in the same package also resolves at the declaration site, so rejectNewNameAlreadyBoundAtReference catches it
+RenameFieldRefactor.java|rejectShadowingCollision   # rejectNewNameAlreadyBound checks the declaration site, which covers these cases

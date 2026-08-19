@@ -86,6 +86,38 @@ public final class TestProject {
         });
     }
 
+    /**
+     * The 1-based, end-inclusive source range of {@code snippet} within a
+     * file -- the addressing scheme {@code ExtractVariableRefactor} uses.
+     *
+     * <p>Exists because hand-counting columns is error-prone in exactly the
+     * way that produces a test which passes for the wrong reason: an
+     * off-by-one lands on a different expression, the refactor refuses with
+     * "no expression found", and a test asserting only that SOMETHING was
+     * refused goes green. That happened twice while writing this suite.
+     *
+     * @throws IllegalArgumentException if the snippet is absent or ambiguous,
+     *         so a fixture can never silently address the wrong thing
+     */
+    public int[] rangeOf(String relativePath, String snippet) {
+        String[] lines = source(relativePath).split("\n", -1);
+        int[] found = null;
+        for (int i = 0; i < lines.length; i++) {
+            int column = lines[i].indexOf(snippet);
+            if (column < 0) {
+                continue;
+            }
+            if (lines[i].indexOf(snippet, column + 1) >= 0 || found != null) {
+                throw new IllegalArgumentException("Snippet '" + snippet + "' is ambiguous in " + relativePath);
+            }
+            found = new int[]{i + 1, column + 1, i + 1, column + snippet.length()};
+        }
+        if (found == null) {
+            throw new IllegalArgumentException("Snippet '" + snippet + "' not found in " + relativePath);
+        }
+        return found;
+    }
+
     /** The current on-disk text of a source file, relative to {@code src/main/java}. */
     public String source(String relativePath) {
         try {

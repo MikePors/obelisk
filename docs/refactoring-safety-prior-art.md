@@ -422,5 +422,53 @@ distinguishing:
   is not a defect, but it does mean deleting the older check would go
   unnoticed.
 
-The script exits non-zero while any check survives, so this is a standing
-signal rather than a one-off measurement.
+### 8.3 Closing the survivors
+
+Writing tests for the 15 brought it to **38 killed, 5 subsumed, 0 survived**.
+
+Two of the tests written in that pass **passed for the wrong reason**, and
+only mutation revealed it:
+
+- The forward-reference test targeted a loop CONDITION, which
+  `rejectRecurringControlPosition` refuses first -- the check under test was
+  never reached. It now targets the for-INIT, which that earlier check
+  deliberately allows.
+- The lambda-in-body test was actually refused by
+  `rejectReturnTypeConversion`, because the resolver cannot type a lambda
+  against a declared return type. Replaced with a qualified call in the body,
+  which genuinely reaches `rejectMutatingOrCallExpressions`.
+
+Both were written believing they exercised a specific check, and both went
+green. Reading them would not have shown it.
+
+The remaining 5 are **subsumed**, not untested: a broader check catches the
+same case first, so no test can distinguish them. `rejectSelfRecursion` and
+`rejectParameterWrites` are both covered by
+`rejectMutatingOrCallExpressions`, which bans every call and every
+assignment; `rejectDeferredEvaluationConstructs` by
+`rejectReturnTypeConversion`; and `rejectDuplicateTypeName` and
+rename-field's `rejectShadowingCollision` by the §7 additions.
+
+They are kept rather than deleted, for a more specific error message and as
+a safety net if the broader check is ever narrowed -- but that protection is
+untestable today, so `tools/mutation-allowlist.txt` records each with its
+justification. The script reports them as SUBSUMED and exits non-zero only
+for survivors NOT on that list, keeping the exit code a signal about NEW
+gaps rather than permanent noise.
+
+### 8.4 The tooling found its own bugs first
+
+Both pieces of infrastructure caught real defects in the first fixtures
+written against them, which is the argument for having them:
+
+- `TestProject.rangeOf(file, snippet)` locates an expression by text and
+  throws on an absent or ambiguous match. It immediately rejected a fixture
+  where `act()` matched both a method declaration and its call site -- that
+  test would have addressed the wrong node, been refused with "no expression
+  found", and gone green. Hand-counted columns had already produced that
+  failure mode twice.
+- The mutation script itself was interrupted mid-run and **left a live
+  `if (false)` in the working tree**, because its trap cleaned the temp
+  directory but never restored sources. On a repo being committed to
+  frequently that is a genuine hazard. The trap now restores on
+  `EXIT INT TERM`.

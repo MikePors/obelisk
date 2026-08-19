@@ -15,6 +15,11 @@
 # A check reported as SURVIVED is either untested, or tested only by a test
 # that some other check also satisfies. Both are worth fixing.
 #
+# Some checks are subsumed by a broader one and can never be killed. Those
+# live in tools/mutation-allowlist.txt with a justification each; they are
+# reported as SUBSUMED and do not fail the run, so the exit code stays a
+# meaningful signal about NEW gaps rather than permanent noise.
+#
 # Usage:  tools/mutation-check.sh          # all checks
 #         tools/mutation-check.sh Rename   # only files matching a pattern
 set -uo pipefail
@@ -23,10 +28,20 @@ cd "$(dirname "$0")/.." || exit 1
 FILTER="${1:-}"
 SRC="obelisk-core/src/main/java/dev/obelisk/core/refactor"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
 
 # Snapshot the pristine sources so every mutation starts from a clean state.
 cp -r "$SRC" "$WORK/pristine"
+
+# Restore sources on ANY exit -- including Ctrl-C, SIGTERM, or the harness
+# killing a long background run. This script edits files in place, so without
+# this an interrupted run leaves a live `if (false)` in the working tree,
+# which is both a broken build and something that could be committed by
+# accident. (Learned the hard way: a killed run did exactly that.)
+cleanup() {
+  [ -d "$WORK/pristine" ] && cp -rf "$WORK/pristine/." "$SRC/"
+  rm -rf "$WORK"
+}
+trap cleanup EXIT INT TERM
 restore() { cp -f "$WORK/pristine/$1" "$SRC/$1"; }
 
 mapfile -t TARGETS < <(
@@ -42,7 +57,14 @@ mapfile -t TARGETS < <(
 printf '%-34s %-46s %s\n' FILE CHECK RESULT
 printf '%.0s-' {1..110}; echo
 
-survived=0; killed=0
+ALLOWLIST="tools/mutation-allowlist.txt"
+is_allowlisted() {  # $1=file  $2=call text
+  [ -f "$ALLOWLIST" ] || return 1
+  local method="${2%%(*}"
+  grep -v '^[[:space:]]*#' "$ALLOWLIST" | grep -q "^${1}|${method}[[:space:]]*\(#.*\)\?$"
+}
+
+survived=0; killed=0; subsumed=0
 for target in "${TARGETS[@]}"; do
   IFS='|' read -r file line call <<< "$target"
   restore "$file"
@@ -55,8 +77,13 @@ for target in "${TARGETS[@]}"; do
     restore "$file"; continue
   fi
   if mvn -o -q test >/dev/null 2>&1; then
-    printf '%-34s %-46s %s\n' "$file" "${call:0:44}" "*** SURVIVED -- no test noticed ***"
-    survived=$((survived + 1))
+    if is_allowlisted "$file" "$call"; then
+      printf '%-34s %-46s %s\n' "$file" "${call:0:44}" "SUBSUMED (allowlisted)"
+      subsumed=$((subsumed + 1))
+    else
+      printf '%-34s %-46s %s\n' "$file" "${call:0:44}" "*** SURVIVED -- no test noticed ***"
+      survived=$((survived + 1))
+    fi
   else
     printf '%-34s %-46s %s\n' "$file" "${call:0:44}" "killed"
     killed=$((killed + 1))
@@ -64,10 +91,8 @@ for target in "${TARGETS[@]}"; do
   restore "$file"
 done
 
-# Belt and braces: make sure we really did put everything back.
-cp -rf "$WORK/pristine/." "$SRC/"
-
 echo
-echo "killed=$killed survived=$survived"
-[ "$survived" -eq 0 ] || echo "Each SURVIVED check needs a test that fails when only that check is disabled."
+echo "killed=$killed subsumed=$subsumed survived=$survived"
+[ "$survived" -eq 0 ] || echo "Each SURVIVED check needs a test that fails when only that check is disabled,
+or an entry in $ALLOWLIST explaining which broader check subsumes it."
 exit $(( survived > 0 ? 1 : 0 ))

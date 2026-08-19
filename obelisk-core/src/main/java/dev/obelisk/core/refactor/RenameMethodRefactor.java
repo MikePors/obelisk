@@ -1,6 +1,7 @@
 package dev.obelisk.core.refactor;
 
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
@@ -269,6 +270,32 @@ public final class RenameMethodRefactor {
         List<ResolvedType> callParams = resolvedCall.formalParameterTypes();
         Optional<TypeDeclaration<?>> ancestor = call.findAncestor(TypeDeclaration.class)
                 .map(RenameMethodRefactor::castTypeDeclaration);
+        // An ANONYMOUS class body is not a TypeDeclaration, so the
+        // findAncestor below skips straight past it to the enclosing named
+        // type -- missing any method the anonymous class itself declares.
+        // Confirmed by repro: an unqualified statically-imported log("x")
+        // inside `new Object() { String report(String s) {...} }` silently
+        // switched from Util.log to the anonymous class's own report once
+        // log was renamed to report, compiling cleanly.
+        for (Node up = call; up != null; up = up.getParentNode().orElse(null)) {
+            if (up instanceof TypeDeclaration) {
+                break;
+            }
+            if (up instanceof com.github.javaparser.ast.expr.ObjectCreationExpr creation) {
+                boolean declaresNewName = creation.getAnonymousClassBody()
+                        .map(body -> body.stream()
+                                .anyMatch(m -> m instanceof MethodDeclaration method
+                                        && method.getNameAsString().equals(newName)))
+                        .orElse(false);
+                if (declaresNewName) {
+                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': the "
+                            + "anonymous class containing an unqualified call to '" + oldName + "' at "
+                            + call.getBegin().map(Object::toString).orElse("?") + " declares its own '" + newName
+                            + "', which would silently take priority over the intended call after the rename.");
+                }
+            }
+        }
+
         // An INHERITED method named newName shadows the call just as surely
         // as a declared one, and `enclosing.getMethods()` below only returns
         // methods declared directly on the enclosing type. Confirmed by
@@ -442,7 +469,11 @@ public final class RenameMethodRefactor {
     private static void rejectNonRootTarget(ResolvedMethodDeclaration resolvedTarget, String oldName,
                                              TypeDeclaration<?> targetClass) {
         List<ResolvedType> targetParams = resolvedTarget.formalParameterTypes();
-        for (ResolvedReferenceType ancestor : resolvedTarget.declaringType().getAllAncestors()) {
+        // ancestorsOf, not getAllAncestors(): a LOCAL class reports no
+        // ancestors, so an override declared by one would not be detected
+        // and only part of the family would be renamed.
+        for (ResolvedReferenceType ancestor
+                : NameBindingChecker.ancestorsOf(resolvedTarget.declaringType(), targetClass)) {
             for (MethodUsage ancestorMethod : ancestor.getDeclaredMethods()) {
                 if (ancestorMethod.getName().equals(oldName)
                         && overrideParamsMatch(ancestor, ancestorMethod, targetParams)) {

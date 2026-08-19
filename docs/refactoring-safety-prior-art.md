@@ -556,3 +556,45 @@ never fire), but a phantom gap in the record invites someone to close it.
 
 Final state: **121 tests, 39 killed / 5 subsumed / 0 survived / 0
 unmeasurable** across all 44 targets.
+
+## 10. The known-quirks audit
+
+Every round of review had been finding the same class of bug — a check
+written against JavaParser's AST model where that model diverges from JLS
+semantics — one instance at a time, by luck of what the reviewer happened to
+construct. Rather than wait for round N+1, every use site of the seven APIs
+that had *already* produced a confirmed bug was audited directly.
+
+| API | The divergence | Sites | Verdict |
+|---|---|---|---|
+| `getAllAncestors()` | empty for a LOCAL class | 16 | **3 real**, 4 safe (import qualifiers can't name local classes) |
+| `ResolvedFieldDeclaration` | enum constants are not one | 8 | **1 real**, rest safe |
+| `accessSpecifier()` | `NONE` for interface members | 4 | **2 real** (over-refusal) |
+| `findAncestor(...)` | walks past scopes that aren't the target node type | 11 | **1 real** |
+| `calculateResolvedType()` | reports target-typed answers | 10 | clean — all guarded by the poly-expression bans |
+| `findAll(TypeDeclaration)` | misses anonymous / enum-constant bodies | 2 | clean — both look up by name or FQN, which those bodies don't have |
+| `isStatic()` | `false` for interface fields | 11 | clean — the reachable one was already fixed |
+
+**Two silent behaviour changes found and fixed**, both reproduced end to end:
+
+- A **local class** extending a base with a `static` block could be inlined
+  away, and the base's `<clinit>` silently stopped running. Byte-for-byte the
+  §7 class-initialization hazard, reached through the one declaration shape
+  `getAllAncestors()` does not report.
+- An **anonymous class's own method** captured an unqualified call after a
+  rename: `Util.log:x` became `anon.report:x`, compiling cleanly. This had
+  been noted parenthetically "by inspection" in an earlier review; only the
+  inherited-method half of that finding was fixed at the time.
+
+Plus three accessibility corrections: an interface constant read through a
+parameter was refused despite being implicitly public (JLS 9.3), a type
+nested in an interface was treated as non-public (JLS 9.5), and a field
+access resolving to something other than a plain field — an enum constant,
+whose resolution type exposes no declaring type — was silently *allowed*
+rather than refused, which is the wrong direction for an accessibility check.
+
+**The audit found more, faster, than the review rounds did.** Reviews sample
+the space by constructing cases; enumerating the use sites of a known-bad API
+covers it. The list of seven is itself the accumulated residue of every prior
+round, so this is the point where that history starts paying compound
+interest rather than being re-learned.

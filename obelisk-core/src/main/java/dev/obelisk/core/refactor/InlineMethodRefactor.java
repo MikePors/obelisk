@@ -1239,9 +1239,24 @@ public final class InlineMethodRefactor {
         try {
             ResolvedValueDeclaration resolved = fieldAccess.resolve();
             if (!(resolved instanceof com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration field)) {
-                return;
+                // Anything that isn't a plain field -- notably an ENUM
+                // CONSTANT, whose resolution type exposes no declaring type
+                // at all -- cannot have its accessibility verified here.
+                // This used to return silently, i.e. treat unverifiable as
+                // fine, which is the wrong direction for an accessibility
+                // check. Found by auditing every ResolvedFieldDeclaration
+                // test in this file after enum constants had already caused
+                // two separate bugs elsewhere.
+                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+                        + "reads '" + fieldAccess + "', which doesn't resolve to a plain field, so whether every "
+                        + "call site can access it can't be verified. Not supported in this version.");
             }
-            if (field.accessSpecifier() != com.github.javaparser.ast.AccessSpecifier.PUBLIC) {
+            // A member declared in an INTERFACE is implicitly public (JLS
+            // 9.3) but reports NONE, so testing the specifier alone refuses
+            // a perfectly accessible constant. asRepairableStaticField
+            // already handled this; this check did not.
+            boolean implicitlyPublic = isDeclaredInInterface(field.declaringType());
+            if (!implicitlyPublic && field.accessSpecifier() != com.github.javaparser.ast.AccessSpecifier.PUBLIC) {
                 throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                         + "reads '" + fieldAccess + "', a non-public field -- inlining would splice that access "
                         + "into every call site, some of which may not have access to it (confirmed via repro to "
@@ -1263,6 +1278,23 @@ public final class InlineMethodRefactor {
     }
 
     /**
+     * Is this member/type declared inside an interface, and therefore
+     * implicitly {@code public} (JLS 9.3 for fields, 9.5 for member types)
+     * regardless of the {@code NONE} access specifier JavaParser reports?
+     */
+    private static boolean isDeclaredInInterface(
+            com.github.javaparser.resolution.declarations.ResolvedTypeDeclaration type) {
+        try {
+            if (type.isInterface()) {
+                return true;
+            }
+            return type.containerType().map(c -> c.isInterface()).orElse(false);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
      * Is {@code type}, or any type that ENCLOSES it (walking outward via
      * {@code containerType()} for a nested type), non-public? A member of a
      * type is only actually reachable from outside if every enclosing type
@@ -1274,8 +1306,12 @@ public final class InlineMethodRefactor {
             com.github.javaparser.resolution.declarations.ResolvedTypeDeclaration type) {
         com.github.javaparser.resolution.declarations.ResolvedTypeDeclaration current = type;
         while (current != null) {
+            // A type declared INSIDE an interface is implicitly public (JLS
+            // 9.5) and reports NONE, so the specifier test alone would call
+            // it non-public and refuse a legal inline.
             if (current instanceof com.github.javaparser.resolution.declarations.HasAccessSpecifier has
-                    && has.accessSpecifier() != com.github.javaparser.ast.AccessSpecifier.PUBLIC) {
+                    && has.accessSpecifier() != com.github.javaparser.ast.AccessSpecifier.PUBLIC
+                    && !isDeclaredInInterface(current)) {
                 return true;
             }
             current = current instanceof com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration ref
@@ -1912,7 +1948,11 @@ public final class InlineMethodRefactor {
             throw new RefactorException("Could not resolve '" + targetClass.getNameAsString() + "' to check its "
                     + "ancestors for static-initialization effects: " + e.getMessage(), e);
         }
-        for (var ancestor : resolvedClass.getAllAncestors()) {
+        // NameBindingChecker.ancestorsOf, not getAllAncestors(): the latter
+        // returns empty for a LOCAL class, so a local class extending a Base
+        // with a static block was inlined away and Base's <clinit> silently
+        // stopped running (confirmed by repro).
+        for (var ancestor : NameBindingChecker.ancestorsOf(resolvedClass, targetClass)) {
             var declOpt = ancestor.getTypeDeclaration();
             if (declOpt.isEmpty()) {
                 throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': an ancestor of "

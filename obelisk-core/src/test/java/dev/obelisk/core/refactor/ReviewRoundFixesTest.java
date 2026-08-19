@@ -130,6 +130,38 @@ class ReviewRoundFixesTest {
                     .hasMessageContaining("subtype");
         }
 
+
+        @Test
+        @DisplayName("a LOCAL class's inherited <clinit> effect is still detected")
+        void refusesInlineOnLocalClassWithInheritedStaticBlock() {
+            TestProject p = project()
+                    .add("com/example/Base.java", """
+                            package com.example;
+                            public class Base {
+                                static { System.out.println("registered"); }
+                            }
+                            """)
+                    .add("com/example/Main.java", """
+                            package com.example;
+                            public class Main {
+                                public static boolean go(int[] args) {
+                                    class Local extends Base {
+                                        static boolean pos(int n) { return n > 0; }
+                                    }
+                                    int v = args.length;
+                                    return Local.pos(v);
+                                }
+                            }
+                            """);
+            // Found by auditing every getAllAncestors() call site rather than
+            // by review: the static-initialization check walked ancestors with
+            // the raw API, so a local class reported none and Base's <clinit>
+            // silently stopped running after inlining.
+            assertThat(p.expectRefused(ctx ->
+                    InlineMethodRefactor.run(ctx, "Local", "pos", null, true)))
+                    .hasMessageContaining("com.example.Base");
+        }
+
         @Test
         @DisplayName("renaming a LOCAL class's method onto an inherited name is refused too")
         void refusesLocalClassMethodOntoInheritedName() {
@@ -274,6 +306,122 @@ class ReviewRoundFixesTest {
             assertThat(p.expectRefused(ctx ->
                     RenameFieldRefactor.run(ctx, "Base", "total", "count", true)))
                     .isNotNull();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    @Nested
+    @DisplayName("interface members are implicitly public (JLS 9.3 / 9.5)")
+    class ImplicitlyPublicInterfaceMembers {
+
+        @Test
+        @DisplayName("a constant read through a parameter of interface type is accessible")
+        void allowsInterfaceConstantReadThroughParameter() {
+            TestProject p = project()
+                    .add("com/example/Limits.java", """
+                            package com.example;
+                            public interface Limits {
+                                int MAX = 10;
+                            }
+                            """)
+                    .add("com/example/Util.java", """
+                            package com.example;
+                            public final class Util {
+                                public static int cap(Limits l, int n) { return l.MAX + n; }
+                                public static int go(Limits l, int n) { return cap(l, n); }
+                            }
+                            """);
+            // Reports accessSpecifier() == NONE despite being implicitly
+            // public, so the accessibility check refused a legal inline.
+            p.run(ctx -> InlineMethodRefactor.run(ctx, "Util", "cap", null, true));
+            assertThat(p.source("com/example/Util.java")).contains("l.MAX + n");
+            p.assertCompiles();
+        }
+
+        @Test
+        @DisplayName("a field read that isn't a plain field can't be verified, so it's refused")
+        void refusesUnverifiableFieldAccess() {
+            TestProject p = project()
+                    .add("com/example/Level.java", """
+                            package com.example;
+                            enum Level { HIGH, LOW }
+                            """)
+                    .add("com/example/Util.java", """
+                            package com.example;
+                            final class Util {
+                                static Level pick(Level l) { return l.HIGH; }
+                                static Level go(Level l) { return pick(l); }
+                            }
+                            """);
+            // An enum constant exposes no declaring type, so its
+            // accessibility is unverifiable. This used to return silently.
+            assertThat(p.expectRefused(ctx ->
+                    InlineMethodRefactor.run(ctx, "Util", "pick", null, true)))
+                    .isNotNull();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    @Nested
+    @DisplayName("anonymous class bodies are scopes too")
+    class AnonymousClassScopes {
+
+        @Test
+        @DisplayName("an anonymous class's OWN method shadows an unqualified call after the rename")
+        void refusesShadowingByAnonymousClassOwnMethod() {
+            TestProject p = project()
+                    .add("com/example/Util.java", """
+                            package com.example;
+                            public final class Util {
+                                public static String log(String s) { return "Util.log:" + s; }
+                            }
+                            """)
+                    .add("com/example/Main.java", """
+                            package com.example;
+                            import static com.example.Util.log;
+                            public class Main {
+                                public static String go() {
+                                    Object o = new Object() {
+                                        String report(String s) { return "anon.report:" + s; }
+                                        @Override public String toString() { return log("x"); }
+                                    };
+                                    return o.toString();
+                                }
+                            }
+                            """);
+            // An anonymous class body is not a TypeDeclaration, so
+            // findAncestor(TypeDeclaration.class) skipped past it to Main.
+            // Output silently went from "Util.log:x" to "anon.report:x".
+            assertThat(p.expectRefused(ctx ->
+                    RenameMethodRefactor.run(ctx, "Util", "log", "report", null, true)))
+                    .hasMessageContaining("anonymous class");
+        }
+
+        @Test
+        @DisplayName("a name the anonymous class does not declare stays allowed")
+        void allowsFreeNameThroughAnonymousClass() {
+            TestProject p = project()
+                    .add("com/example/Util.java", """
+                            package com.example;
+                            public final class Util {
+                                public static String log(String s) { return "Util.log:" + s; }
+                            }
+                            """)
+                    .add("com/example/Main.java", """
+                            package com.example;
+                            import static com.example.Util.log;
+                            public class Main {
+                                public static String go() {
+                                    Object o = new Object() {
+                                        @Override public String toString() { return log("x"); }
+                                    };
+                                    return o.toString();
+                                }
+                            }
+                            """);
+            p.run(ctx -> RenameMethodRefactor.run(ctx, "Util", "log", "trace", null, true));
+            assertThat(p.source("com/example/Main.java")).contains("return trace(\"x\")");
+            p.assertCompiles();
         }
     }
 }

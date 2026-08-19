@@ -382,7 +382,11 @@ public final class RenameFieldRefactor {
                 throw hidingCollision(enclosing, newName, oldName, name);
             }
             try {
-                for (ResolvedReferenceType ancestor : enclosing.resolve().getAllAncestors()) {
+                // ancestorsOf, not getAllAncestors(): an unqualified
+                // reference inside a LOCAL class would otherwise skip this
+                // hiding check entirely.
+                for (ResolvedReferenceType ancestor
+                        : NameBindingChecker.ancestorsOf(enclosing.resolve(), enclosing)) {
                     Optional<TypeDeclaration<?>> ancestorAst = findTypeDeclaration(ctx, ancestor.getQualifiedName());
                     if (ancestorAst.isPresent() && declaresOwnField(ancestorAst.get(), newName)) {
                         throw hidingCollision(ancestorAst.get(), newName, oldName, name);

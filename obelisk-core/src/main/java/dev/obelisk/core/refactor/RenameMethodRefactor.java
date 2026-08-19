@@ -365,14 +365,25 @@ public final class RenameMethodRefactor {
      * Proves each repaired call's new qualifier names a type that really
      * does declare the renamed method.
      *
-     * <p><b>What this can and cannot check.</b> The natural verification --
-     * re-resolve the rewritten call and confirm it reaches the same method
-     * -- is not available: JavaParser cannot resolve a call whose scope is a
-     * package-qualified name, returning "unable to find the method
-     * declaration" for {@code com.example.Util.report("x")} even though
-     * javac accepts it. Confirmed by direct repro, and the same resolver
-     * limitation that blocked a fully-qualified field access in
-     * rename-field.
+     * <p><b>Why not the stronger check.</b> The natural verification --
+     * re-resolve the rewritten call and confirm it still reaches the same
+     * method, as rename-field's repair does -- is not available here, and
+     * the reason is worth stating precisely because the obvious explanation
+     * is wrong.
+     *
+     * <p>It is NOT that JavaParser dislikes a package-qualified scope.
+     * Qualifying with the simple name and adding a type import was tried,
+     * and failed identically. The actual blocker is that {@code
+     * JavaParserTypeSolver} reads target types <b>from disk</b>, and at
+     * verification time nothing has been written yet -- so resolving {@code
+     * Util.report(x)} loads the on-disk {@code Util}, which still declares
+     * {@code log}. Confirmed by probe.
+     *
+     * <p>That is why rename-field's repair CAN verify end to end and this
+     * one cannot: {@code this.count} resolves within the single compilation
+     * unit being mutated, which is in memory. A repair whose target lives in
+     * a DIFFERENT file is unverifiable by resolution, whatever the qualifier
+     * looks like.
      *
      * <p>So this verifies the half that is checkable: the qualifier resolves
      * to a real type, and that type declares a method of the new name. The

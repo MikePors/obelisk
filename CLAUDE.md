@@ -123,6 +123,16 @@ were.
    own error locations are reliable; a regex over method signatures silently
    matched nothing and assigned zero sites.
 
+### Verification-by-resolution only works within one compilation unit
+
+`JavaParserTypeSolver` reads types **from disk**. During a refactor nothing
+has been written yet, so resolving anything in another file gets the
+PRE-mutation source. A repair whose target lives in the same file
+(`this.count` in rename-field) can be verified end to end by resolving the
+rewritten node; a repair pointing at another file (`Util.report(x)` in
+rename-method) cannot, and no amount of qualifier fiddling changes that.
+Verify structurally against the in-memory AST in that case, and say so.
+
 ## Verification habits
 
 - **Reproduce, don't reason.** Every finding worth acting on was confirmed by
@@ -159,9 +169,13 @@ were.
 
 ## Repo hygiene
 
-- Never run `git checkout`/`reset`/`clean` reflexively. One careless
-  `git checkout -- .` appended to a build command discarded uncommitted work
-  in this repo. Check `git status` first; stash if anything is there.
+- Never run `git checkout`/`reset`/`clean` reflexively. This has cost work
+  TWICE here: once as `git checkout -- .` appended to a build command, once
+  as `git checkout -- <file>` used to undo a temporary debug probe, which
+  also discarded four unrelated uncommitted edits to that file. **To remove
+  a probe, restore from a `cp` backup taken before adding it** — never from
+  git, which cannot tell your probe from your work. Check `git status`
+  first; stash if anything is there.
 - `tools/mutation-check.sh` edits sources in place. It restores on
   `EXIT INT TERM`, but never run it against a tree with uncommitted work you
   cannot afford to re-do, and never from a second checkout concurrently.

@@ -19,8 +19,8 @@ research notes are in `docs/` §3 and §6. The payoff is *repair* — it replace
 a refusal with a working refactoring. Validation on its own is the half that
 was already there, and adding more of it does not make the tool more useful.
 
-**This has drifted to refusal-only twice.** Current score: **1 repair method,
-48 `reject*` methods.** When in doubt, that ratio is the smell.
+**This has drifted to refusal-only twice.** Score: **2 repair methods, 48
+`reject*` methods.** When in doubt, that ratio is the smell.
 
 ### The decision rule
 
@@ -39,11 +39,19 @@ problems. Binding problems are the repair case. Stop and write the repair.
 
 ### Known backlog — refusals that should become repairs
 
-`rejectNewNameAlreadyBound`, both `rejectShadowingCollision`s,
-`rejectNewNameAlreadyVisible`, `rejectNewNameDeclaredBySubtype`,
-`rejectNewNameAlreadyBoundAtReference`, and extract-variable's
-`rejectNameCollision`. All are "the new name already means something here",
-which is exactly what qualification repairs.
+**Done:** rename-field's local/parameter/pattern capture — the reference is
+qualified (`this.count`, or `Config.count` for a static) instead of refused.
+
+**Still refusals, repairable:** `rejectNewNameAlreadyBound`, rename-method's
+`rejectShadowingCollision` (qualify the call), and
+`rejectNewNameAlreadyBoundAtReference` (qualify the type reference), plus
+extract-variable's `rejectNameCollision`.
+
+**Genuinely NOT repairable, leave them:** `rejectNewNameDeclaredBySubtype`
+and `rejectNewNameAlreadyVisible`'s override half — you cannot qualify away
+an override relationship. rename-field's hierarchy-hiding clause is also out:
+the correct qualifier depends on where the target sits relative to the hider,
+so there is no single safe rewrite.
 
 Doing this also fixes a real problem with the verification pass: it currently
 survives mutation because, with one repair in the codebase, it has almost

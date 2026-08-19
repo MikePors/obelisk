@@ -10,6 +10,7 @@ import com.github.javaparser.ast.body.InitializerDeclaration;
 import com.github.javaparser.ast.body.Parameter;
 import com.github.javaparser.ast.body.TypeDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
+import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
 import com.github.javaparser.ast.expr.LambdaExpr;
 import com.github.javaparser.ast.expr.Name;
@@ -85,6 +86,17 @@ public final class RenameFieldRefactor {
         // afterward -- same two-pass discipline as rename-method/rename-class.
         List<NameExpr> unqualifiedToRename = new ArrayList<>();
         List<FieldAccessExpr> qualifiedToRename = new ArrayList<>();
+        // REPAIR, not refusal: references that a local/parameter/pattern of
+        // the new name would capture get QUALIFIED on the way through rather
+        // than blocking the whole rename. See CLAUDE.md -- a binding hazard
+        // is the repair case.
+        // IDENTITY set, not a List: JavaParser's Node.equals is STRUCTURAL,
+        // so every NameExpr("total") compares equal to every other one and
+        // List.contains would report that all of them need qualifying --
+        // confirmed by repro, where a method with no colliding local still
+        // had its reference rewritten to this.count.
+        Set<NameExpr> referencesNeedingQualification =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
 
         for (CompilationUnit cu : ctx.unitsByFile().values()) {
             for (NameExpr name : cu.findAll(NameExpr.class)) {
@@ -94,7 +106,9 @@ public final class RenameFieldRefactor {
                 ResolvedValueDeclaration resolved = tryResolve(name, warnings, ctx, cu);
                 if (resolved instanceof ResolvedFieldDeclaration field && matchesTarget(field, ownerQualifiedName, oldName)) {
                     unqualifiedToRename.add(name);
-                    rejectShadowingCollision(ctx, name, newName, oldName);
+                    if (rejectShadowingCollision(ctx, name, newName, oldName)) {
+                        referencesNeedingQualification.add(name);
+                    }
                 }
             }
             for (FieldAccessExpr access : cu.findAll(FieldAccessExpr.class)) {
@@ -141,8 +155,13 @@ public final class RenameFieldRefactor {
 
         // Apply every mutation together.
         targetField.getName().setIdentifier(newName);
+        List<Expression> repairedReferences = new ArrayList<>();
         for (NameExpr name : unqualifiedToRename) {
-            name.setName(newName);
+            if (referencesNeedingQualification.contains(name)) {
+                repairedReferences.add(qualifyCapturedReference(name, newName, resolvedField));
+            } else {
+                name.setName(newName);
+            }
         }
         for (FieldAccessExpr access : qualifiedToRename) {
             access.getName().setIdentifier(newName);
@@ -152,6 +171,7 @@ public final class RenameFieldRefactor {
             // import originally reached the field through a subclass name.
             imp.setName(qualifiedName(ownerQualifiedName + "." + newName));
         }
+        verifyRepairedReferences(repairedReferences, ownerQualifiedName, newName, oldName);
 
         List<Path> changedFiles = new ArrayList<>();
         Map<Path, String> diffs = new LinkedHashMap<>();
@@ -359,7 +379,75 @@ public final class RenameFieldRefactor {
      * {@link #rejectDuplicateFieldName}, but for subclasses that merely
      * INHERIT the field being renamed rather than declaring it themselves.
      */
-    private static void rejectShadowingCollision(ProjectContext ctx, NameExpr name, String newName, String oldName) {
+    /**
+     * Rewrites a reference that a same-named local would otherwise capture
+     * into a qualified one -- {@code this.count} for an instance field, or
+     * the declaring type's fully-qualified name for a static.
+     *
+     * <p>This is the repair half of the strategy in CLAUDE.md. Before it,
+     * renaming a field to a name that any enclosing method happened to use
+     * for a parameter was refused outright, which rules out the extremely
+     * ordinary {@code void setTotal(int count)} shape.
+     *
+     * <p>A freshly CONSTRUCTED node rather than a clone, deliberately:
+     * LexicalPreservingPrinter prints stale pre-mutation text for a cloned
+     * node (documented at length on {@code InlineMethodRefactor.planInline}).
+     */
+    private static Expression qualifyCapturedReference(NameExpr name, String newName,
+                                                         ResolvedFieldDeclaration field) {
+        // The declaring type's SIMPLE name for a static, not its FQN: an
+        // unqualified reference is necessarily inside the declaring type or
+        // a subtype, so the simple name is always in scope there, whereas a
+        // hand-built package-qualified FieldAccessExpr chain did not resolve
+        // at all -- caught by verifyRepairedReferences on the first repair
+        // it guarded, which is precisely the job it exists to do.
+        Expression scope = field.isStatic()
+                ? new NameExpr(field.declaringType().getName())
+                : new com.github.javaparser.ast.expr.ThisExpr();
+        FieldAccessExpr qualified = new FieldAccessExpr(scope, newName);
+        name.replace(qualified);
+        return qualified;
+    }
+
+    /**
+     * Proves each repaired reference still reaches the renamed field.
+     *
+     * <p>Verification and repair are a pair: this is what makes qualifying
+     * safe to do at all, rather than a hopeful rewrite. Nothing has been
+     * written to disk at this point, so a failure here leaves the project
+     * untouched.
+     */
+    private static void verifyRepairedReferences(List<Expression> repaired, String ownerQualifiedName,
+                                                   String newName, String oldName) {
+        String expected = ownerQualifiedName + "." + newName;
+        for (Expression reference : repaired) {
+            String actual;
+            try {
+                ResolvedValueDeclaration resolved = ((FieldAccessExpr) reference).resolve();
+                if (!(resolved instanceof ResolvedFieldDeclaration f)) {
+                    throw new RefactorException("Refusing to rename '" + oldName + "' to '" + newName + "': the "
+                            + "qualified reference '" + reference + "' no longer resolves to a field. Nothing has "
+                            + "been written.");
+                }
+                actual = f.declaringType().getQualifiedName() + "." + f.getName();
+            } catch (RefactorException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                throw new RefactorException("Refusing to rename '" + oldName + "' to '" + newName + "': the "
+                        + "qualified reference '" + reference + "' could not be resolved (" + e.getMessage()
+                        + "). Nothing has been written.", e);
+            }
+            if (!actual.equals(expected)) {
+                throw new RefactorException("Refusing to rename '" + oldName + "' to '" + newName + "': the "
+                        + "qualified reference '" + reference + "' binds to '" + actual + "' instead of '"
+                        + expected + "'. Nothing has been written.");
+            }
+        }
+    }
+
+    private static boolean rejectShadowingCollision(ProjectContext ctx, NameExpr name, String newName,
+                                                     String oldName) {
+        boolean needsQualification = false;
         for (Node scopeRoot : enclosingScopeRoots(name)) {
             boolean collides = scopeRoot.findAll(VariableDeclarator.class).stream()
                     .anyMatch(vd -> vd.getNameAsString().equals(newName))
@@ -368,11 +456,13 @@ public final class RenameFieldRefactor {
                     || scopeRoot.findAll(TypePatternExpr.class).stream()
                     .anyMatch(p -> p.getNameAsString().equals(newName));
             if (collides) {
-                throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': the method/"
-                        + "constructor/initializer/lambda containing an unqualified reference to '" + oldName
-                        + "' at " + name.getBegin().map(Object::toString).orElse("?") + " already has a local "
-                        + "variable, parameter, or pattern binding named '" + newName
-                        + "', which would silently shadow the field after rename.");
+                // Was a refusal. A local/parameter/pattern of the new name
+                // would capture this reference -- which is a BINDING hazard,
+                // so it is repaired by qualifying the reference rather than
+                // refused. `this.count` (or `Owner.count` for a static) can
+                // never be captured by a local, and the qualification is
+                // verified afterwards to still reach the same field.
+                needsQualification = true;
             }
         }
 
@@ -400,6 +490,12 @@ public final class RenameFieldRefactor {
                 // already checked above.
             }
         });
+        // The hierarchy-hiding clause above stays a REFUSAL: unlike a local
+        // shadowing a field, the correct qualifier there depends on where
+        // the target field sits relative to the hiding one ('this.' reaches
+        // the wrong one when the hider is on the enclosing type), so there
+        // is no single safe rewrite to synthesise.
+        return needsQualification;
     }
 
     private static RefactorException hidingCollision(TypeDeclaration<?> hidingType, String newName, String oldName,

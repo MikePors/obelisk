@@ -123,26 +123,31 @@ class CaptureRepairTest {
     @Test
     @DisplayName("hierarchy hiding is still refused -- there is no single safe qualifier")
     void stillRefusesHierarchyHiding() {
+        // Deliberately shaped so ONLY the hierarchy-hiding check can fire:
+        // nothing named `count` is in scope where the field is DECLARED (in
+        // Base), so the declaration-site check stays quiet, but the reference
+        // inside Child would be captured by Child's own `count`.
+        //
+        // The first version of this test put the hiding field on Base, where
+        // rejectNewNameAlreadyBound refused first -- so it passed without ever
+        // reaching the check it names. Mutation caught that.
         TestProject p = project()
                 .add("com/example/Base.java", """
                         package com.example;
                         public class Base {
-                            protected int count = 1;
+                            protected int total = 10;
                         }
                         """)
                 .add("com/example/Child.java", """
                         package com.example;
                         public class Child extends Base {
-                            private int total = 10;
-                            public int sum() { return count + this.total; }
+                            protected int count = 1;
+                            public int sum() { return total; }
                         }
                         """);
 
-        // Unlike a local shadowing a field, the correct qualifier here depends
-        // on where the target sits relative to the hiding declaration, so
-        // this stays a refusal rather than a hopeful rewrite.
         assertThat(p.expectRefused(ctx ->
-                RenameFieldRefactor.run(ctx, "Child", "total", "count", true)))
-                .isNotNull();
+                RenameFieldRefactor.run(ctx, "Base", "total", "count", true)))
+                .hasMessageContaining("hide");
     }
 }

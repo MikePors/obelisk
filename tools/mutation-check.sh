@@ -62,6 +62,20 @@ mapfile -t TARGETS < <(
       done
 )
 
+# A reject*/verify* call that is NOT a plain statement (e.g. used as an `if`
+# condition, or an argument) cannot be disabled by prefixing `if (false) `,
+# so the target discovery above would silently skip it and the run would
+# still report success. That happened for real: turning a check into a
+# repair-driving predicate moved it into an `if` condition and quietly
+# removed it from the measured set, while the total stayed the same because
+# another target was added in the same change.
+#
+# So: find them explicitly and fail. Either make the call a plain statement,
+# or rename it -- a predicate that reports a fact is not a `reject*`.
+MISSHAPEN=$(grep -rn --include='*.java' -E '(reject|verify)[A-Z][A-Za-z]*\(' "$SRC" \
+  | grep -vE ':[[:space:]]*(reject|verify)[A-Z][A-Za-z]*\(' \
+  | grep -vE 'private static|\*|//' || true)
+
 printf '%-34s %-46s %s\n' FILE CHECK RESULT
 printf '%.0s-' {1..110}; echo
 
@@ -105,6 +119,14 @@ for target in "${TARGETS[@]}"; do
 done
 
 echo
+if [ -n "$MISSHAPEN" ]; then
+  echo
+  echo "*** reject*/verify* calls that this tool CANNOT disable (not plain statements):"
+  echo "$MISSHAPEN" | sed 's|^.*/||'
+  misshapen=$(echo "$MISSHAPEN" | wc -l)
+  unmeasurable=$(( unmeasurable + misshapen ))
+fi
+
 total=$(( killed + subsumed + survived + unmeasurable ))
 echo "killed=$killed subsumed=$subsumed survived=$survived unmeasurable=$unmeasurable  (of $total targets)"
 [ "$survived" -eq 0 ] || echo "Each SURVIVED check needs a test that fails when only that check is disabled,

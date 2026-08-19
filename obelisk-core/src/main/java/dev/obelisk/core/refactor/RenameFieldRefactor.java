@@ -106,7 +106,8 @@ public final class RenameFieldRefactor {
                 ResolvedValueDeclaration resolved = tryResolve(name, warnings, ctx, cu);
                 if (resolved instanceof ResolvedFieldDeclaration field && matchesTarget(field, ownerQualifiedName, oldName)) {
                     unqualifiedToRename.add(name);
-                    if (rejectShadowingCollision(ctx, name, newName, oldName)) {
+                    rejectHierarchyHiding(ctx, name, newName, oldName);
+                    if (isCapturedByLocalName(name, newName)) {
                         referencesNeedingQualification.add(name);
                     }
                 }
@@ -445,9 +446,18 @@ public final class RenameFieldRefactor {
         }
     }
 
-    private static boolean rejectShadowingCollision(ProjectContext ctx, NameExpr name, String newName,
-                                                     String oldName) {
-        boolean needsQualification = false;
+    /**
+     * Would a local, parameter or pattern binding named {@code newName}
+     * capture this reference? If so it gets QUALIFIED rather than refused --
+     * see {@link #qualifyCapturedReference}.
+     *
+     * <p>Deliberately NOT named {@code reject*}: it refuses nothing, it
+     * reports a fact that drives a repair. The naming matters because
+     * {@code tools/mutation-check.sh} treats {@code reject*}/{@code verify*}
+     * as the set of checks it must be able to disable, and a predicate used
+     * in an {@code if} condition cannot be disabled that way.
+     */
+    private static boolean isCapturedByLocalName(NameExpr name, String newName) {
         for (Node scopeRoot : enclosingScopeRoots(name)) {
             boolean collides = scopeRoot.findAll(VariableDeclarator.class).stream()
                     .anyMatch(vd -> vd.getNameAsString().equals(newName))
@@ -456,15 +466,22 @@ public final class RenameFieldRefactor {
                     || scopeRoot.findAll(TypePatternExpr.class).stream()
                     .anyMatch(p -> p.getNameAsString().equals(newName));
             if (collides) {
-                // Was a refusal. A local/parameter/pattern of the new name
-                // would capture this reference -- which is a BINDING hazard,
-                // so it is repaired by qualifying the reference rather than
-                // refused. `this.count` (or `Owner.count` for a static) can
-                // never be captured by a local, and the qualification is
-                // verified afterwards to still reach the same field.
-                needsQualification = true;
+                return true;
             }
         }
+        return false;
+    }
+
+    /**
+     * Refuses when a type in the reference's own hierarchy already declares
+     * a field named {@code newName}, which would hide the renamed one.
+     *
+     * <p>Unlike a local shadowing a field, this has no single safe repair:
+     * the correct qualifier depends on where the target field sits relative
+     * to the hiding declaration ({@code this.} reaches the wrong one when
+     * the hider is on the enclosing type), so it stays a refusal.
+     */
+    private static void rejectHierarchyHiding(ProjectContext ctx, NameExpr name, String newName, String oldName) {
 
         name.findAncestor(TypeDeclaration.class).ifPresent(enclosingRaw -> {
             TypeDeclaration<?> enclosing = castTypeDeclaration(enclosingRaw);
@@ -490,12 +507,6 @@ public final class RenameFieldRefactor {
                 // already checked above.
             }
         });
-        // The hierarchy-hiding clause above stays a REFUSAL: unlike a local
-        // shadowing a field, the correct qualifier there depends on where
-        // the target field sits relative to the hiding one ('this.' reaches
-        // the wrong one when the hider is on the enclosing type), so there
-        // is no single safe rewrite to synthesise.
-        return needsQualification;
     }
 
     private static RefactorException hidingCollision(TypeDeclaration<?> hidingType, String newName, String oldName,

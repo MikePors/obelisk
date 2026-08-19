@@ -48,3 +48,4 @@ RenameMethodRefactor.java|rejectDuplicateSignature  # requires name AND matching
 InlineMethodRefactor.java|verifyBindingsPreserved   # post-transformation guard; fires only if a precondition missed something, which by definition cannot be written as a test
 InlineMethodRefactor.java|verifyEverythingStillResolves  # same, the per-node resolution half
 InlineMethodRefactor.java|verifyRepairsBindToOriginalDeclaration  # same, guards the static-field repair; repair qualifies with an FQN, which cannot bind elsewhere, so it is unreachable unless the repair itself regresses
+RenameMethodRefactor.java|verifyQualifiedCalls  # (b) BACKSTOP: guards the qualify-shadowed-call repair; unreachable while the repair works, since it fires only if the synthesised qualifier fails to name a type declaring the renamed method

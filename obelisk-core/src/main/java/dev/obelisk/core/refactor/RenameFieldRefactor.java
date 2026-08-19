@@ -75,7 +75,7 @@ public final class RenameFieldRefactor {
         VariableDeclarator targetField = findField(targetClass, oldName);
         ResolvedValueDeclaration resolvedTarget = resolveTarget(targetField, targetClass, oldName);
         if (!(resolvedTarget instanceof ResolvedFieldDeclaration resolvedField)) {
-            throw new RefactorException(Check.INVALID_IDENTIFIER, "'" + oldName + "' on '" + targetClass.getNameAsString()
+            throw new RefactorException(Check.TARGET_FIELD_NOT_A_FIELD, "'" + oldName + "' on '" + targetClass.getNameAsString()
                     + "' did not resolve to a field declaration");
         }
         String ownerQualifiedName = resolvedField.declaringType().getQualifiedName();

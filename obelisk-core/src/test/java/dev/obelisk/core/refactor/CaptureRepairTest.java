@@ -151,4 +151,39 @@ class CaptureRepairTest {
                 RenameFieldRefactor.run(ctx, "Base", "total", "count", true)))
                 .hasMessageContaining("would silently hide the renamed field");
     }
+
+    @Test
+    @DisplayName("a shadowed call to an INSTANCE method is refused -- no safe receiver to synthesise")
+    void refusesShadowedInstanceCall() {
+        // Shaped so the new name is visible at the CALL SITE's type but not
+        // on the method's owner -- otherwise rejectNewNameAlreadyVisible
+        // refuses first and this check is never reached. (The ID assertion
+        // caught exactly that on the first attempt.)
+        TestProject p = project()
+                .add("com/example/HasReport.java", """
+                        package com.example;
+                        public interface HasReport {
+                            default String report(String s) { return "iface:" + s; }
+                        }
+                        """)
+                .add("com/example/Owner.java", """
+                        package com.example;
+                        public class Owner {
+                            public String log(String s) { return "Owner.log:" + s; }
+                        }
+                        """)
+                .add("com/example/Sub.java", """
+                        package com.example;
+                        public class Sub extends Owner implements HasReport {
+                            public String go() { return log("x"); }
+                        }
+                        """);
+
+        // Static targets are repaired by qualifying with the declaring type.
+        // An instance target cannot be: the right receiver depends on whether
+        // the method is declared, inherited, or reached from an inner class.
+        assertThat(p.expectRefused(Check.REJECT_SHADOWING_COLLISION, ctx ->
+                RenameMethodRefactor.run(ctx, "Owner", "log", "report", null, true)))
+                .hasMessageContaining("cannot safely qualify");
+    }
 }

@@ -502,7 +502,7 @@ public final class InlineMethodRefactor {
 
         List<Parameter> parameters = targetMethod.getParameters();
         if (parameters.size() != call.getArguments().size()) {
-            throw new RefactorException(Check.REJECT_UNSAFE_ARGUMENT_SUBSTITUTION, "Cannot inline call to '" + methodName + "' at "
+            throw new RefactorException(Check.ARGUMENT_COUNT_MISMATCH, "Cannot inline call to '" + methodName + "' at "
                     + call.getBegin().map(Object::toString).orElse("?") + ": argument count doesn't match the "
                     + "method's parameter count.");
         }

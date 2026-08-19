@@ -129,7 +129,7 @@ public final class ExtractVariableRefactor {
         Expression target = findExpression(cu, start, end);
 
         Statement anchorStatement = target.findAncestor(Statement.class)
-                .orElseThrow(() -> new RefactorException(Check.INVALID_IDENTIFIER, "The expression at " + start + "-" + end
+                .orElseThrow(() -> new RefactorException(Check.EXPRESSION_NOT_IN_A_STATEMENT, "The expression at " + start + "-" + end
                         + " isn't inside a method/constructor/initializer body (e.g. it's a field initializer, "
                         + "annotation argument, or type-level construct) -- extract-variable only supports "
                         + "expressions inside a statement."));

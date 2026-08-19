@@ -116,5 +116,6 @@ public enum Check {
     WRITE_FAILED,
 
     // --- Internal invariants: a bug in obelisk, not in the input ---
+    ARGUMENT_COUNT_MISMATCH,
     INTERNAL_ERROR,
 }

@@ -68,7 +68,7 @@ public final class RenameClassRefactor {
 
         TypeDeclaration<?> targetClass = ClassFinder.findClass(ctx, className);
         String targetQualifiedName = targetClass.getFullyQualifiedName()
-                .orElseThrow(() -> new RefactorException(Check.INVALID_IDENTIFIER, "Could not determine the fully-qualified name of '"
+                .orElseThrow(() -> new RefactorException(Check.TARGET_TYPE_UNRESOLVABLE, "Could not determine the fully-qualified name of '"
                         + className + "'"));
 
         rejectDuplicateTypeName(ctx, targetClass, newName);

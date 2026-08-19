@@ -1,6 +1,7 @@
 package dev.obelisk.core.refactor;
 
 import dev.obelisk.core.testsupport.TestProject;
+import dev.obelisk.guard.Check;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -64,7 +65,7 @@ class UncoveredChecksTest {
         @DisplayName("the right operand of && may not be evaluated at all")
         void refusesShortCircuitRightOperand() {
             TestProject p = withBody("        boolean b = flag() && compute(a) > 0;");
-            assertThat(p.expectRefused(extract(p, "com/example/Main.java", "compute(a)", "c")))
+            assertThat(p.expectRefused(Check.REJECT_UNHOISTABLE_POSITION, extract(p, "com/example/Main.java", "compute(a)", "c")))
                     .hasMessageContaining("short-circuit");
         }
 
@@ -72,7 +73,7 @@ class UncoveredChecksTest {
         @DisplayName("a ternary branch is only conditionally evaluated")
         void refusesTernaryBranch() {
             TestProject p = withBody("        int b = flag() ? compute(a) : 0;");
-            assertThat(p.expectRefused(extract(p, "com/example/Main.java", "compute(a)", "c")))
+            assertThat(p.expectRefused(Check.REJECT_UNHOISTABLE_POSITION, extract(p, "com/example/Main.java", "compute(a)", "c")))
                     .isNotNull();
         }
 
@@ -80,7 +81,7 @@ class UncoveredChecksTest {
         @DisplayName("a while condition is re-evaluated every iteration")
         void refusesLoopCondition() {
             TestProject p = withBody("        while (compute(a) > 100) { }");
-            assertThat(p.expectRefused(extract(p, "com/example/Main.java", "compute(a)", "c")))
+            assertThat(p.expectRefused(Check.REJECT_RECURRING_CONTROL_POSITION, extract(p, "com/example/Main.java", "compute(a)", "c")))
                     .isNotNull();
         }
 
@@ -88,7 +89,7 @@ class UncoveredChecksTest {
         @DisplayName("an assert's condition only runs when assertions are enabled")
         void refusesAssertCondition() {
             TestProject p = withBody("        assert compute(a) > 0;");
-            assertThat(p.expectRefused(extract(p, "com/example/Main.java", "compute(a)", "c")))
+            assertThat(p.expectRefused(Check.REJECT_ASSERT_POSITION, extract(p, "com/example/Main.java", "compute(a)", "c")))
                     .isNotNull();
         }
 
@@ -100,7 +101,7 @@ class UncoveredChecksTest {
             // which would make this test pass without ever reaching the
             // forward-reference check (confirmed by mutation).
             TestProject p = withBody("        for (int i = 0, n = compute(i); i < n; i++) { }");
-            assertThat(p.expectRefused(extract(p, "com/example/Main.java", "compute(i)", "c")))
+            assertThat(p.expectRefused(Check.REJECT_FORWARD_REFERENCE, extract(p, "com/example/Main.java", "compute(i)", "c")))
                     .hasMessageContaining("declared elsewhere in the same statement");
         }
 
@@ -168,7 +169,7 @@ class UncoveredChecksTest {
                         public int viaOther(Util other, int n) { return other.twice(n); }
                     }
                     """);
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_UNSAFE_RECEIVER, inline("Util", "twice")))
                     .hasMessageContaining("explicit receiver");
         }
 
@@ -183,7 +184,7 @@ class UncoveredChecksTest {
                         public static int go(int n) { return self().twice(n); }
                     }
                     """);
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_UNSAFE_RECEIVER, inline("Util", "twice")))
                     .hasMessageContaining("qualified by an expression");
         }
 
@@ -200,7 +201,7 @@ class UncoveredChecksTest {
                         public static int go(String t) { return lengthOf(t); }
                     }
                     """);
-            assertThat(p.expectRefused(inline("Util", "lengthOf")))
+            assertThat(p.expectRefused(Check.REJECT_MUTATING_OR_CALL_EXPRESSIONS, inline("Util", "lengthOf")))
                     .hasMessageContaining("calls a method");
         }
 
@@ -221,7 +222,7 @@ class UncoveredChecksTest {
                                 public String greet() { return "Child"; }
                             }
                             """);
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NON_ROOT_TARGET, ctx ->
                     RenameMethodRefactor.run(ctx, "Child", "greet", "salute", null, true)))
                     .isNotNull();
         }

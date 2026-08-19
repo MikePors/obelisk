@@ -1,6 +1,7 @@
 package dev.obelisk.core.refactor;
 
 import dev.obelisk.core.testsupport.TestProject;
+import dev.obelisk.guard.Check;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -146,7 +147,7 @@ class CaptureRepairTest {
                         }
                         """);
 
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_HIERARCHY_HIDING, ctx ->
                 RenameFieldRefactor.run(ctx, "Base", "total", "count", true)))
                 .hasMessageContaining("would silently hide the renamed field");
     }

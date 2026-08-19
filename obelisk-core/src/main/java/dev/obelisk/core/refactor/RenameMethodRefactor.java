@@ -1,5 +1,7 @@
 package dev.obelisk.core.refactor;
 
+import dev.obelisk.guard.Check;
+import dev.obelisk.guard.Guard;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.ImportDeclaration;
@@ -224,6 +226,7 @@ public final class RenameMethodRefactor {
      * already declared directly on the same type with the same parameter
      * list -- that would produce two methods with identical signatures.
      */
+    @Guard(Check.REJECT_DUPLICATE_SIGNATURE)
     private static void rejectDuplicateSignature(TypeDeclaration<?> owner, String newName,
                                                    String paramsSuffix, String oldName) {
         for (MethodDeclaration candidate : owner.getMethods()) {
@@ -234,7 +237,7 @@ public final class RenameMethodRefactor {
                 ResolvedMethodDeclaration resolved = candidate.resolve();
                 String candidateSuffix = signatureOf(resolved).substring(signatureOf(resolved).indexOf('('));
                 if (candidateSuffix.equals(paramsSuffix)) {
-                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+                    throw new RefactorException(Check.REJECT_DUPLICATE_SIGNATURE, "Cannot rename '" + oldName + "' to '" + newName + "': '"
                             + owner.getNameAsString() + "' already declares " + newName + paramsSuffix);
                 }
             } catch (RefactorException e) {
@@ -265,6 +268,7 @@ public final class RenameMethodRefactor {
      * for definitely-correct renames), so verification here deliberately
      * avoids relying on it.
      */
+    @Guard(Check.REJECT_SHADOWING_COLLISION)
     private static void rejectShadowingCollision(MethodCallExpr call, ResolvedMethodDeclaration resolvedCall,
                                                    String newName, String oldName) {
         List<ResolvedType> callParams = resolvedCall.formalParameterTypes();
@@ -288,7 +292,7 @@ public final class RenameMethodRefactor {
                                         && method.getNameAsString().equals(newName)))
                         .orElse(false);
                 if (declaresNewName) {
-                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': the "
+                    throw new RefactorException(Check.REJECT_SHADOWING_COLLISION, "Cannot rename '" + oldName + "' to '" + newName + "': the "
                             + "anonymous class containing an unqualified call to '" + oldName + "' at "
                             + call.getBegin().map(Object::toString).orElse("?") + " declares its own '" + newName
                             + "', which would silently take priority over the intended call after the rename.");
@@ -308,7 +312,7 @@ public final class RenameMethodRefactor {
         ancestor.ifPresent(enclosing -> {
             try {
                 NameBindingChecker.visibleMethodOn(enclosing.resolve(), enclosing, newName).ifPresent(bound -> {
-                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': "
+                    throw new RefactorException(Check.REJECT_SHADOWING_COLLISION, "Cannot rename '" + oldName + "' to '" + newName + "': "
                             + bound + " is already visible on '" + enclosing.getNameAsString()
                             + "', which contains an unqualified call to '" + oldName + "' at "
                             + call.getBegin().map(Object::toString).orElse("?") + ". After the rename Java would "
@@ -329,7 +333,7 @@ public final class RenameMethodRefactor {
                 }
                 try {
                     if (paramsMatch(candidate.resolve().formalParameterTypes(), callParams)) {
-                        throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+                        throw new RefactorException(Check.REJECT_SHADOWING_COLLISION, "Cannot rename '" + oldName + "' to '" + newName + "': '"
                                 + enclosing.getNameAsString() + "' (containing an unqualified call to '" + oldName
                                 + "' at " + call.getBegin().map(Object::toString).orElse("?")
                                 + ") already declares its own '" + newName
@@ -376,6 +380,7 @@ public final class RenameMethodRefactor {
      * applicability, which would mean reimplementing overload resolution.
      * Over-refusal is the direction this codebase always chooses.
      */
+    @Guard(Check.REJECT_NEW_NAME_ALREADY_VISIBLE)
     private static void rejectNewNameAlreadyVisible(List<MethodDeclaration> familyDeclarations,
                                                       String oldName, String newName) {
         for (MethodDeclaration member : familyDeclarations) {
@@ -388,7 +393,7 @@ public final class RenameMethodRefactor {
             // Every family member is named oldName while this searches for
             // newName, so no family signature can match -- no exclusion needed.
             NameBindingChecker.visibleMethodOn(owner, member, newName).ifPresent(bound -> {
-                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': "
+                    throw new RefactorException(Check.REJECT_NEW_NAME_ALREADY_VISIBLE, "Cannot rename '" + oldName + "' to '" + newName + "': "
                             + bound + " is already visible on '" + owner.getQualifiedName() + "'. Renaming would "
                             + "either make a call site silently select that other method instead (overload "
                             + "resolution picks the most specific applicable one, not the one you meant), or turn "
@@ -408,6 +413,7 @@ public final class RenameMethodRefactor {
      * b.greet()} and silently dispatches to {@code Child.greet} -- Child's
      * unrelated method became an override of Base's. Compiles cleanly.
      */
+    @Guard(Check.REJECT_NEW_NAME_DECLARED_BY_SUBTYPE)
     private static void rejectNewNameDeclaredBySubtype(ProjectContext ctx, String ownerQualifiedName,
                                                          Set<String> familySignatures, String oldName,
                                                          String newName) {
@@ -442,7 +448,7 @@ public final class RenameMethodRefactor {
                     if (!isSubtype) {
                         continue;
                     }
-                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+                    throw new RefactorException(Check.REJECT_NEW_NAME_DECLARED_BY_SUBTYPE, "Cannot rename '" + oldName + "' to '" + newName + "': '"
                             + declaringType.getQualifiedName() + "' is a subtype of '" + ownerQualifiedName
                             + "' and already declares '" + resolvedCandidate.getQualifiedSignature() + "'. Renaming "
                             + "would silently turn that unrelated method into an override, so calls made "
@@ -466,6 +472,7 @@ public final class RenameMethodRefactor {
      * otherwise produce a stale {@code @Override} and non-matching sibling
      * declarations with no warning at all).
      */
+    @Guard(Check.REJECT_NON_ROOT_TARGET)
     private static void rejectNonRootTarget(ResolvedMethodDeclaration resolvedTarget, String oldName,
                                              TypeDeclaration<?> targetClass) {
         List<ResolvedType> targetParams = resolvedTarget.formalParameterTypes();
@@ -477,7 +484,7 @@ public final class RenameMethodRefactor {
             for (MethodUsage ancestorMethod : ancestor.getDeclaredMethods()) {
                 if (ancestorMethod.getName().equals(oldName)
                         && overrideParamsMatch(ancestor, ancestorMethod, targetParams)) {
-                    throw new RefactorException("'" + targetClass.getNameAsString() + "." + oldName
+                    throw new RefactorException(Check.REJECT_NON_ROOT_TARGET, "'" + targetClass.getNameAsString() + "." + oldName
                             + "' overrides '" + ancestor.getQualifiedName() + "." + oldName
                             + "'. Point --class at '" + ancestor.getQualifiedName() + "' to rename the whole "
                             + "override family; renaming from a non-root override is refused to avoid leaving "

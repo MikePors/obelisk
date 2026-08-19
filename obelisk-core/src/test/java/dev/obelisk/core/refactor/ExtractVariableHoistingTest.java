@@ -1,6 +1,7 @@
 package dev.obelisk.core.refactor;
 
 import dev.obelisk.core.testsupport.TestProject;
+import dev.obelisk.guard.Check;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -48,7 +49,7 @@ class ExtractVariableHoistingTest {
 
         // `next()` on line 6. Before the fix this hoisted above the class
         // declaration and output went from "1,2" to "1,1".
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_HOIST_ACROSS_TYPE_BOUNDARY, ctx ->
                 ExtractVariableRefactor.run(ctx, mainFile(), 6, 33, 6, 38, "first", true)))
                 .hasMessageContaining("local or anonymous");
     }
@@ -73,7 +74,7 @@ class ExtractVariableHoistingTest {
 
         // `open()` on line 6. Before the fix the call was hoisted above the
         // try and the exception stopped being caught.
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_HOIST_OUT_OF_RESOURCE_SPECIFICATION, ctx ->
                 ExtractVariableRefactor.run(ctx, mainFile(), 6, 28, 6, 33, "res", true)))
                 .hasMessageContaining("try-with-resources");
     }
@@ -95,7 +96,7 @@ class ExtractVariableHoistingTest {
 
         // `new ArrayList<>()` on line 6. Before the fix this produced
         // `var zz = new ArrayList<>();` inferring ArrayList<Object>.
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_TARGET_TYPED_INITIALIZER, ctx ->
                 ExtractVariableRefactor.run(ctx, mainFile(), 6, 26, 6, 42, "zz", true)))
                 .hasMessageContaining("diamond");
     }
@@ -115,7 +116,7 @@ class ExtractVariableHoistingTest {
 
         // `5` on line 4. Before the fix this produced `var zz = 5;` (int)
         // and then `byte b = zz;` -- a lossy conversion.
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_TARGET_TYPED_INITIALIZER, ctx ->
                 ExtractVariableRefactor.run(ctx, mainFile(), 4, 18, 4, 18, "zz", true)))
                 .hasMessageContaining("isn't assignable");
     }
@@ -137,7 +138,7 @@ class ExtractVariableHoistingTest {
 
         // `f()` on line 6. Before the fix this produced `var v = f(); x += v;`
         // and x went from 6 to 105.
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_COMPOUND_ASSIGNMENT_REORDERING, ctx ->
                 ExtractVariableRefactor.run(ctx, mainFile(), 6, 14, 6, 16, "v", true)))
                 .hasMessageContaining("compound assignment");
     }
@@ -226,7 +227,7 @@ class ExtractVariableHoistingTest {
         // `Collections.emptyList()` on line 5. Comparing resolved types can't
         // catch this -- the resolver reports the target-typed List<String> on
         // both sides -- so it's refused structurally, like the diamond.
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_TARGET_TYPED_INITIALIZER, ctx ->
                 ExtractVariableRefactor.run(ctx, mainFile(), 5, 26, 5, 58, "empty", true)))
                 .hasMessageContaining("generic method call whose type");
     }
@@ -243,7 +244,7 @@ class ExtractVariableHoistingTest {
                 }
                 """);
 
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_TARGET_TYPED_INITIALIZER, ctx ->
                 ExtractVariableRefactor.run(ctx, mainFile(), 4, 16, 4, 16, "zz", true)))
                 .hasMessageContaining("isn't assignable");
     }

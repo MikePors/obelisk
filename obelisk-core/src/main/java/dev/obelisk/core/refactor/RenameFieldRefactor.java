@@ -1,5 +1,7 @@
 package dev.obelisk.core.refactor;
 
+import dev.obelisk.guard.Check;
+import dev.obelisk.guard.Guard;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
 import com.github.javaparser.ast.Node;
@@ -302,10 +304,11 @@ public final class RenameFieldRefactor {
      * {@code Base.count} -- now resolves to the renamed field. The same
      * happens when the shadowed binding is a static import.
      */
+    @Guard(Check.REJECT_NEW_NAME_ALREADY_BOUND)
     private static void rejectNewNameAlreadyBound(ProjectContext ctx, VariableDeclarator targetField,
                                                     String oldName, String newName) {
         NameBindingChecker.valueBindingAt(ctx.typeSolver(), targetField, newName).ifPresent(bound -> {
-            throw new RefactorException("Cannot rename field '" + oldName + "' to '" + newName + "': that name "
+            throw new RefactorException(Check.REJECT_NEW_NAME_ALREADY_BOUND, "Cannot rename field '" + oldName + "' to '" + newName + "': that name "
                     + "already means " + bound + " where this field is declared. Renaming would make the field "
                     + "hide it, silently changing what every unqualified '" + newName + "' in this class refers to. "
                     + "Not supported in this version.");
@@ -317,13 +320,14 @@ public final class RenameFieldRefactor {
      * already declared directly on the same type -- Java disallows two
      * fields with the same name in one type.
      */
+    @Guard(Check.REJECT_DUPLICATE_FIELD_NAME)
     private static void rejectDuplicateFieldName(TypeDeclaration<?> targetClass, VariableDeclarator targetField,
                                                    String newName, String oldName) {
         for (BodyDeclaration<?> member : targetClass.getMembers()) {
             if (member instanceof FieldDeclaration fieldDecl) {
                 for (VariableDeclarator variable : fieldDecl.getVariables()) {
                     if (variable != targetField && variable.getNameAsString().equals(newName)) {
-                        throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+                        throw new RefactorException(Check.REJECT_DUPLICATE_FIELD_NAME, "Cannot rename '" + oldName + "' to '" + newName + "': '"
                                 + targetClass.getNameAsString() + "' already declares a field named '" + newName + "'");
                     }
                 }
@@ -339,7 +343,7 @@ public final class RenameFieldRefactor {
         if (targetClass instanceof com.github.javaparser.ast.body.EnumDeclaration enumDecl) {
             for (var constant : enumDecl.getEntries()) {
                 if (constant.getNameAsString().equals(newName)) {
-                    throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+                    throw new RefactorException(Check.REJECT_DUPLICATE_FIELD_NAME, "Cannot rename '" + oldName + "' to '" + newName + "': '"
                             + targetClass.getNameAsString() + "' already declares an enum constant named '"
                             + newName + "', which shares a name space with its fields.");
                 }
@@ -418,6 +422,7 @@ public final class RenameFieldRefactor {
      * written to disk at this point, so a failure here leaves the project
      * untouched.
      */
+    @Guard(Check.VERIFY_REPAIRED_REFERENCES)
     private static void verifyRepairedReferences(List<Expression> repaired, String ownerQualifiedName,
                                                    String newName, String oldName) {
         String expected = ownerQualifiedName + "." + newName;
@@ -426,7 +431,7 @@ public final class RenameFieldRefactor {
             try {
                 ResolvedValueDeclaration resolved = ((FieldAccessExpr) reference).resolve();
                 if (!(resolved instanceof ResolvedFieldDeclaration f)) {
-                    throw new RefactorException("Refusing to rename '" + oldName + "' to '" + newName + "': the "
+                    throw new RefactorException(Check.VERIFY_REPAIRED_REFERENCES, "Refusing to rename '" + oldName + "' to '" + newName + "': the "
                             + "qualified reference '" + reference + "' no longer resolves to a field. Nothing has "
                             + "been written.");
                 }
@@ -434,12 +439,12 @@ public final class RenameFieldRefactor {
             } catch (RefactorException e) {
                 throw e;
             } catch (RuntimeException e) {
-                throw new RefactorException("Refusing to rename '" + oldName + "' to '" + newName + "': the "
+                throw new RefactorException(Check.VERIFY_REPAIRED_REFERENCES, "Refusing to rename '" + oldName + "' to '" + newName + "': the "
                         + "qualified reference '" + reference + "' could not be resolved (" + e.getMessage()
                         + "). Nothing has been written.", e);
             }
             if (!actual.equals(expected)) {
-                throw new RefactorException("Refusing to rename '" + oldName + "' to '" + newName + "': the "
+                throw new RefactorException(Check.VERIFY_REPAIRED_REFERENCES, "Refusing to rename '" + oldName + "' to '" + newName + "': the "
                         + "qualified reference '" + reference + "' binds to '" + actual + "' instead of '"
                         + expected + "'. Nothing has been written.");
             }
@@ -481,6 +486,7 @@ public final class RenameFieldRefactor {
      * to the hiding declaration ({@code this.} reaches the wrong one when
      * the hider is on the enclosing type), so it stays a refusal.
      */
+    @Guard(Check.REJECT_HIERARCHY_HIDING)
     private static void rejectHierarchyHiding(ProjectContext ctx, NameExpr name, String newName, String oldName) {
 
         name.findAncestor(TypeDeclaration.class).ifPresent(enclosingRaw -> {
@@ -511,7 +517,8 @@ public final class RenameFieldRefactor {
 
     private static RefactorException hidingCollision(TypeDeclaration<?> hidingType, String newName, String oldName,
                                                        NameExpr name) {
-        return new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': '"
+        return new RefactorException(Check.REJECT_HIERARCHY_HIDING,
+                "Cannot rename '" + oldName + "' to '" + newName + "': '"
                 + hidingType.getNameAsString() + "' already declares its own '" + newName
                 + "' field, which would silently hide the renamed field for the unqualified reference at "
                 + name.getBegin().map(Object::toString).orElse("?") + ".");

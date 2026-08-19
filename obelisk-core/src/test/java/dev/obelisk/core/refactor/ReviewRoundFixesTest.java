@@ -1,6 +1,7 @@
 package dev.obelisk.core.refactor;
 
 import dev.obelisk.core.testsupport.TestProject;
+import dev.obelisk.guard.Check;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -53,7 +54,7 @@ class ReviewRoundFixesTest {
                     """);
             // Narrowing the check to non-local targets let this through:
             // hoisting x++ moved it before the implicit read, 2 -> 3.
-            assertThat(p.expectRefused(extract(p, "x++", "v")))
+            assertThat(p.expectRefused(Check.REJECT_COMPOUND_ASSIGNMENT_REORDERING, extract(p, "x++", "v")))
                     .hasMessageContaining("compound assignment");
         }
 
@@ -70,7 +71,7 @@ class ReviewRoundFixesTest {
                         }
                     }
                     """);
-            assertThat(p.expectRefused(extract(p, "(x = 10)", "v")))
+            assertThat(p.expectRefused(Check.REJECT_COMPOUND_ASSIGNMENT_REORDERING, extract(p, "(x = 10)", "v")))
                     .hasMessageContaining("compound assignment");
         }
 
@@ -125,7 +126,7 @@ class ReviewRoundFixesTest {
             // slipped through even after the scan was broadened to reach
             // anonymous and enum-constant bodies: go() silently went from
             // "base-hello" to "child-greet".
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_DECLARED_BY_SUBTYPE, ctx ->
                     RenameMethodRefactor.run(ctx, "Base", "hello", "greet", null, true)))
                     .hasMessageContaining("subtype");
         }
@@ -157,7 +158,7 @@ class ReviewRoundFixesTest {
             // by review: the static-initialization check walked ancestors with
             // the raw API, so a local class reported none and Base's <clinit>
             // silently stopped running after inlining.
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON, ctx ->
                     InlineMethodRefactor.run(ctx, "Local", "pos", null, true)))
                     .hasMessageContaining("com.example.Base");
         }
@@ -184,7 +185,7 @@ class ReviewRoundFixesTest {
                                 }
                             }
                             """);
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_VISIBLE, ctx ->
                     RenameMethodRefactor.run(ctx, "Child", "hello", "greet", null, true)))
                     .isNotNull();
         }
@@ -213,7 +214,7 @@ class ReviewRoundFixesTest {
             // findAncestor(CallableDeclaration) walks past the lambda and
             // answered with go()'s int return type, so this was accepted and
             // emitted a lambda body incompatible with Supplier<Byte>.
-            assertThat(p.expectRefused(extract(p, "5", "t")))
+            assertThat(p.expectRefused(Check.REJECT_TARGET_TYPED_INITIALIZER, extract(p, "5", "t")))
                     .isNotNull();
         }
 
@@ -228,7 +229,7 @@ class ReviewRoundFixesTest {
                         }
                     }
                     """);
-            assertThat(p.expectRefused(extract(p, "5", "t")))
+            assertThat(p.expectRefused(Check.REJECT_TARGET_TYPED_INITIALIZER, extract(p, "5", "t")))
                     .hasMessageContaining("isn't assignable");
         }
     }
@@ -273,7 +274,7 @@ class ReviewRoundFixesTest {
                         }
                     }
                     """);
-            assertThat(p.expectRefused(extract(p, "Collections.emptyList()", "empty")))
+            assertThat(p.expectRefused(Check.REJECT_TARGET_TYPED_INITIALIZER, extract(p, "Collections.emptyList()", "empty")))
                     .hasMessageContaining("generic method call whose type");
         }
     }
@@ -303,7 +304,7 @@ class ReviewRoundFixesTest {
             // parameter, in scope only at the REFERENCE. Disabling
             // rejectShadowingCollision silently rewrote the body to
             // `count + count`, changing the result from 15 to 10.
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.VERIFY_REPAIRED_REFERENCES, ctx ->
                     RenameFieldRefactor.run(ctx, "Base", "total", "count", true)))
                     .isNotNull();
         }
@@ -355,7 +356,7 @@ class ReviewRoundFixesTest {
                             """);
             // An enum constant exposes no declaring type, so its
             // accessibility is unverifiable. This used to return silently.
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_INACCESSIBLE_FIELD, ctx ->
                     InlineMethodRefactor.run(ctx, "Util", "pick", null, true)))
                     .isNotNull();
         }
@@ -392,7 +393,7 @@ class ReviewRoundFixesTest {
             // An anonymous class body is not a TypeDeclaration, so
             // findAncestor(TypeDeclaration.class) skipped past it to Main.
             // Output silently went from "Util.log:x" to "anon.report:x".
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_SHADOWING_COLLISION, ctx ->
                     RenameMethodRefactor.run(ctx, "Util", "log", "report", null, true)))
                     .hasMessageContaining("the anonymous class containing an unqualified call");
         }

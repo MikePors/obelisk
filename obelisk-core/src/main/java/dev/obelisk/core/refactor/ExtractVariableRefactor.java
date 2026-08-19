@@ -1,5 +1,7 @@
 package dev.obelisk.core.refactor;
 
+import dev.obelisk.guard.Check;
+import dev.obelisk.guard.Guard;
 import com.github.javaparser.Position;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
@@ -241,27 +243,28 @@ public final class ExtractVariableRefactor {
      * including) {@code anchorStatement}, since anything at or above the
      * statement boundary is irrelevant to this check.
      */
+    @Guard(Check.REJECT_UNHOISTABLE_POSITION)
     private static void rejectUnhoistablePosition(Expression target, Statement anchorStatement) {
         Node current = target;
         while (current != anchorStatement) {
             Node parent = current.getParentNode()
-                    .orElseThrow(() -> new RefactorException("Internal error: lost the path from the target "
+                    .orElseThrow(() -> new RefactorException(Check.REJECT_UNHOISTABLE_POSITION, "Internal error: lost the path from the target "
                             + "expression to its enclosing statement"));
             if (parent instanceof LambdaExpr) {
-                throw new RefactorException("Cannot extract this expression: it's the (non-block) body of a "
+                throw new RefactorException(Check.REJECT_UNHOISTABLE_POSITION, "Cannot extract this expression: it's the (non-block) body of a "
                         + "lambda, so its evaluation is deferred to when the lambda is invoked -- hoisting it out "
                         + "to the enclosing statement would evaluate it eagerly instead, changing behavior.");
             }
             if (parent instanceof BinaryExpr binary
                     && (binary.getOperator() == BinaryExpr.Operator.AND || binary.getOperator() == BinaryExpr.Operator.OR)
                     && binary.getRight() == current) {
-                throw new RefactorException("Cannot extract this expression: it's the right-hand side of a "
+                throw new RefactorException(Check.REJECT_UNHOISTABLE_POSITION, "Cannot extract this expression: it's the right-hand side of a "
                         + "short-circuit " + binary.getOperator().asString() + " and may not currently evaluate at "
                         + "all -- extracting it would evaluate it unconditionally instead, changing behavior.");
             }
             if (parent instanceof ConditionalExpr ternary
                     && (ternary.getThenExpr() == current || ternary.getElseExpr() == current)) {
-                throw new RefactorException("Cannot extract this expression: it's a branch of a ternary and only "
+                throw new RefactorException(Check.REJECT_UNHOISTABLE_POSITION, "Cannot extract this expression: it's a branch of a ternary and only "
                         + "evaluates conditionally -- extracting it would evaluate it unconditionally instead, "
                         + "changing behavior.");
             }
@@ -285,6 +288,7 @@ public final class ExtractVariableRefactor {
      * arising when "multiple arguments both have side effects, which is
      * already fairly unusual code". {@code x += f()} is not unusual.
      */
+    @Guard(Check.REJECT_COMPOUND_ASSIGNMENT_REORDERING)
     private static void rejectCompoundAssignmentReordering(Expression target, Statement anchorStatement) {
         for (AssignExpr assign : anchorStatement.findAll(AssignExpr.class)) {
             if (assign.getOperator() == AssignExpr.Operator.ASSIGN) {
@@ -293,7 +297,7 @@ public final class ExtractVariableRefactor {
             if (isWithin(target, assign.getValue())
                     && (isObservableFromElsewhere(assign.getTarget())
                             || rightHandSideWritesTarget(assign))) {
-                throw new RefactorException("Cannot extract this expression: it's inside the right-hand side of a "
+                throw new RefactorException(Check.REJECT_COMPOUND_ASSIGNMENT_REORDERING, "Cannot extract this expression: it's inside the right-hand side of a "
                         + "compound assignment ('" + assign.getOperator().asString() + "') to something the "
                         + "expression could itself modify. A compound assignment READS its target before "
                         + "evaluating the right-hand side, so hoisting the expression above the statement moves "
@@ -371,6 +375,7 @@ public final class ExtractVariableRefactor {
      * once-per-program one. Where the initializer references the class's own
      * members, the same path produces a compile error instead.
      */
+    @Guard(Check.REJECT_HOIST_ACROSS_TYPE_BOUNDARY)
     private static void rejectHoistAcrossTypeBoundary(Expression target, Statement anchorStatement) {
         Node current = target;
         while (current != anchorStatement) {
@@ -382,7 +387,7 @@ public final class ExtractVariableRefactor {
                     || parent instanceof com.github.javaparser.ast.expr.ObjectCreationExpr creation
                             && creation.getAnonymousClassBody().isPresent()
                             && !isWithin(target, creation.getArguments())) {
-                throw new RefactorException("Cannot extract this expression: it's inside a local or anonymous "
+                throw new RefactorException(Check.REJECT_HOIST_ACROSS_TYPE_BOUNDARY, "Cannot extract this expression: it's inside a local or anonymous "
                         + "class body, and the statement it would be hoisted above sits OUTSIDE that class -- "
                         + "moving it there changes a per-instance initializer into something evaluated once, or "
                         + "puts it where the class's own members aren't in scope.");
@@ -406,10 +411,11 @@ public final class ExtractVariableRefactor {
      * moved the call outside, so an exception it threw stopped being caught
      * and crashed the program instead. Compiles cleanly.
      */
+    @Guard(Check.REJECT_HOIST_OUT_OF_RESOURCE_SPECIFICATION)
     private static void rejectHoistOutOfResourceSpecification(Expression target, Statement anchorStatement) {
         if (anchorStatement instanceof com.github.javaparser.ast.stmt.TryStmt tryStmt
                 && tryStmt.getResources().stream().anyMatch(resource -> isWithin(target, resource))) {
-            throw new RefactorException("Cannot extract this expression: it's part of a try-with-resources "
+            throw new RefactorException(Check.REJECT_HOIST_OUT_OF_RESOURCE_SPECIFICATION, "Cannot extract this expression: it's part of a try-with-resources "
                     + "resource specification, so hoisting it would move its evaluation OUTSIDE the 'try' -- any "
                     + "exception it throws would stop being handled by this statement's own catch/finally.");
         }
@@ -436,23 +442,24 @@ public final class ExtractVariableRefactor {
      * type {@code int}, and {@code byte b = t;} is then a lossy conversion.
      * </ul>
      */
+    @Guard(Check.REJECT_TARGET_TYPED_INITIALIZER)
     private static void rejectTargetTypedInitializer(Expression target) {
         if (target instanceof com.github.javaparser.ast.expr.ObjectCreationExpr creation
                 && creation.getType().getTypeArguments().map(List::isEmpty).orElse(false)) {
-            throw new RefactorException("Cannot extract a diamond ('new "
+            throw new RefactorException(Check.REJECT_TARGET_TYPED_INITIALIZER, "Cannot extract a diamond ('new "
                     + creation.getType().getNameAsString() + "<>(...)'): its type arguments are inferred from the "
                     + "context it sits in, and 'var' would infer them from the expression alone (typically as "
                     + "'Object'), which generally won't compile in the original position.");
         }
         if (target instanceof com.github.javaparser.ast.expr.MethodCallExpr call
                 && returnTypeDependsOnInference(call)) {
-            throw new RefactorException("Cannot extract '" + call + "': it's a generic method call whose type "
+            throw new RefactorException(Check.REJECT_TARGET_TYPED_INITIALIZER, "Cannot extract '" + call + "': it's a generic method call whose type "
                     + "arguments are inferred from the context it sits in, and 'var' would infer them from the "
                     + "call alone (typically as 'Object'), which generally won't compile in the original "
                     + "position.");
         }
         if (returnsFromLambdaBody(target)) {
-            throw new RefactorException("Cannot extract this expression: it's the value of a 'return' inside a "
+            throw new RefactorException(Check.REJECT_TARGET_TYPED_INITIALIZER, "Cannot extract this expression: it's the value of a 'return' inside a "
                     + "lambda body, and the type expected there comes from the lambda's functional interface, "
                     + "which isn't determinable here. A 'var' would capture the expression's own type instead, "
                     + "which may not be compatible.");
@@ -465,7 +472,7 @@ public final class ExtractVariableRefactor {
                 return;
             }
             if (!expected.isAssignableBy(actual)) {
-                throw new RefactorException("Cannot extract this expression: its own type ('" + actual.describe()
+                throw new RefactorException(Check.REJECT_TARGET_TYPED_INITIALIZER, "Cannot extract this expression: its own type ('" + actual.describe()
                         + "') isn't assignable to the type expected here ('" + expected.describe() + "'), which "
                         + "means the surrounding code relies on a conversion applied in THIS position. A 'var' "
                         + "declaration would capture the expression's own type instead, so the original position "
@@ -635,24 +642,25 @@ public final class ExtractVariableRefactor {
         return Optional.empty();
     }
 
+    @Guard(Check.REJECT_UNSUITABLE_INITIALIZER)
     private static void rejectUnsuitableInitializer(Expression target) {
         if (target instanceof NullLiteralExpr) {
-            throw new RefactorException("Cannot extract a bare 'null' literal: 'var x = null;' isn't legal Java "
+            throw new RefactorException(Check.REJECT_UNSUITABLE_INITIALIZER, "Cannot extract a bare 'null' literal: 'var x = null;' isn't legal Java "
                     + "-- 'var' can't infer a type from it. Not supported in this version.");
         }
         if (target instanceof LambdaExpr) {
-            throw new RefactorException("Cannot extract a lambda expression on its own: 'var' can't infer a "
+            throw new RefactorException(Check.REJECT_UNSUITABLE_INITIALIZER, "Cannot extract a lambda expression on its own: 'var' can't infer a "
                     + "functional interface type without a target type. Not supported in this version.");
         }
         if (target instanceof MethodReferenceExpr) {
-            throw new RefactorException("Cannot extract a bare method reference on its own: 'var' can't infer a "
+            throw new RefactorException(Check.REJECT_UNSUITABLE_INITIALIZER, "Cannot extract a bare method reference on its own: 'var' can't infer a "
                     + "functional interface type without a target type. Not supported in this version.");
         }
         if (target instanceof AnnotationExpr) {
-            throw new RefactorException("Cannot extract an annotation: it isn't a value-producing expression.");
+            throw new RefactorException(Check.REJECT_UNSUITABLE_INITIALIZER, "Cannot extract an annotation: it isn't a value-producing expression.");
         }
         if (target instanceof VariableDeclarationExpr) {
-            throw new RefactorException("Cannot extract a variable declaration: it isn't a value-producing "
+            throw new RefactorException(Check.REJECT_UNSUITABLE_INITIALIZER, "Cannot extract a variable declaration: it isn't a value-producing "
                     + "expression on its own.");
         }
     }
@@ -670,6 +678,7 @@ public final class ExtractVariableRefactor {
      * (see {@link #rejectForwardReference} for the separate scoping risk a
      * for-init can introduce).
      */
+    @Guard(Check.REJECT_RECURRING_CONTROL_POSITION)
     private static void rejectRecurringControlPosition(Expression target, Statement anchorStatement) {
         if (anchorStatement instanceof ForStmt forStmt) {
             if (isWithin(target, forStmt.getCompare().orElse(null))
@@ -684,7 +693,8 @@ public final class ExtractVariableRefactor {
     }
 
     private static RefactorException recurringControlException(String where) {
-        return new RefactorException("Cannot extract this expression: it's " + where + ", which is re-evaluated "
+        return new RefactorException(Check.REJECT_RECURRING_CONTROL_POSITION,
+                "Cannot extract this expression: it's " + where + ", which is re-evaluated "
                 + "on every iteration -- hoisting it to a one-time variable before the loop would freeze its value "
                 + "instead, changing behavior.");
     }
@@ -717,9 +727,10 @@ public final class ExtractVariableRefactor {
      * evaluates at all -- a hoisted {@code var} would evaluate unconditionally
      * either way.
      */
+    @Guard(Check.REJECT_ASSERT_POSITION)
     private static void rejectAssertPosition(Statement anchorStatement) {
         if (anchorStatement instanceof AssertStmt) {
-            throw new RefactorException("Cannot extract this expression: it's part of an 'assert' statement's "
+            throw new RefactorException(Check.REJECT_ASSERT_POSITION, "Cannot extract this expression: it's part of an 'assert' statement's "
                     + "condition or message, both of which only evaluate conditionally (the message only on "
                     + "failure, and neither at all when assertions are disabled, the JVM default) -- hoisting it "
                     + "into an unconditional variable would change when it runs.");
@@ -735,6 +746,7 @@ public final class ExtractVariableRefactor {
      * would place the reference before its own declaration, an illegal
      * forward reference.
      */
+    @Guard(Check.REJECT_FORWARD_REFERENCE)
     private static void rejectForwardReference(Expression target, Statement anchorStatement) {
         Set<String> declaredInStatement = new HashSet<>();
         anchorStatement.findAll(VariableDeclarator.class).forEach(vd -> declaredInStatement.add(vd.getNameAsString()));
@@ -746,7 +758,7 @@ public final class ExtractVariableRefactor {
         boolean referencesOwnDeclaration = target.findAll(NameExpr.class).stream()
                 .anyMatch(n -> declaredInStatement.contains(n.getNameAsString()));
         if (referencesOwnDeclaration) {
-            throw new RefactorException("Cannot extract this expression: it references a name declared elsewhere "
+            throw new RefactorException(Check.REJECT_FORWARD_REFERENCE, "Cannot extract this expression: it references a name declared elsewhere "
                     + "in the same statement (e.g. a for-loop's own init variable, or an earlier variable in the "
                     + "same declaration) -- hoisting it before the whole statement would reference that name "
                     + "before its declaration.");
@@ -763,15 +775,16 @@ public final class ExtractVariableRefactor {
      * extractable -- this only refuses when {@code target} IS the exact
      * write-target node, not merely nested somewhere inside it.
      */
+    @Guard(Check.REJECT_LVALUE_POSITION)
     private static void rejectLvaluePosition(Expression target) {
         Node parent = target.getParentNode().orElse(null);
         if (parent instanceof AssignExpr assign && assign.getTarget() == target) {
-            throw new RefactorException("Cannot extract this expression: it's the left-hand side of an "
+            throw new RefactorException(Check.REJECT_LVALUE_POSITION, "Cannot extract this expression: it's the left-hand side of an "
                     + "assignment -- replacing it with a variable reference would turn the assignment into a "
                     + "no-op instead of actually writing to it.");
         }
         if (parent instanceof UnaryExpr unary && unary.getExpression() == target && isIncrementOrDecrement(unary)) {
-            throw new RefactorException("Cannot extract this expression: it's the operand of '"
+            throw new RefactorException(Check.REJECT_LVALUE_POSITION, "Cannot extract this expression: it's the operand of '"
                     + unary.getOperator().asString() + "' -- replacing it with a variable reference would make "
                     + "the increment/decrement apply to the new variable instead of the original.");
         }
@@ -808,16 +821,17 @@ public final class ExtractVariableRefactor {
      * written inline is invisible to it and its coverage report silently
      * excluded this one.
      */
+    @Guard(Check.REJECT_UNANCHORABLE_STATEMENT)
     private static void rejectUnanchorableStatement(Statement anchorStatement) {
         if (anchorStatement.getParentNode().orElse(null) instanceof LambdaExpr lambda
                 && lambda.getExpressionBody().isPresent()) {
-            throw new RefactorException("Cannot extract this expression: it's (part of) the body of an "
+            throw new RefactorException(Check.REJECT_UNANCHORABLE_STATEMENT, "Cannot extract this expression: it's (part of) the body of an "
                     + "expression-bodied lambda, so its evaluation is deferred to when the lambda is invoked -- "
                     + "hoisting it out to an enclosing statement would evaluate it eagerly instead, changing "
                     + "behavior.");
         }
         if (!(anchorStatement.getParentNode().orElse(null) instanceof BlockStmt)) {
-            throw new RefactorException("The statement containing this expression isn't a direct child of a "
+            throw new RefactorException(Check.REJECT_UNANCHORABLE_STATEMENT, "The statement containing this expression isn't a direct child of a "
                     + "{ } block (likely a braceless if/while/for body) -- add braces around it first.");
         }
     }
@@ -826,24 +840,26 @@ public final class ExtractVariableRefactor {
      * Refuses when the anchor statement doesn't start its own source line,
      * since the new declaration's indentation is copied verbatim from it.
      */
+    @Guard(Check.REJECT_STATEMENT_NOT_AT_LINE_START)
     private static void rejectStatementNotAtLineStart(String indent) {
         if (!indent.isBlank()) {
-            throw new RefactorException("The statement containing this expression isn't the first thing on its "
+            throw new RefactorException(Check.REJECT_STATEMENT_NOT_AT_LINE_START, "The statement containing this expression isn't the first thing on its "
                     + "source line -- extract-variable needs to copy its indentation, so move it to its own line "
                     + "first.");
         }
     }
 
+    @Guard(Check.REJECT_NON_VALUE_EXPRESSION)
     private static void rejectNonValueExpression(Expression target) {
         try {
             if (target.calculateResolvedType().isVoid()) {
-                throw new RefactorException("Cannot extract this expression: it has type 'void', so it doesn't "
+                throw new RefactorException(Check.REJECT_NON_VALUE_EXPRESSION, "Cannot extract this expression: it has type 'void', so it doesn't "
                         + "produce a value 'var' could hold.");
             }
         } catch (RefactorException e) {
             throw e;
         } catch (RuntimeException e) {
-            throw new RefactorException("Could not determine this expression's type (" + e.getMessage()
+            throw new RefactorException(Check.REJECT_NON_VALUE_EXPRESSION, "Could not determine this expression's type (" + e.getMessage()
                     + ") -- refusing rather than risk extracting something that isn't a proper value.", e);
         }
     }
@@ -877,9 +893,10 @@ public final class ExtractVariableRefactor {
      * println("limit=" + limit)} printing 6 instead of 5, with a clean
      * compile.
      */
+    @Guard(Check.REJECT_NAME_COLLISION)
     private static void rejectNameCollision(ProjectContext ctx, Expression target, String name) {
         NameBindingChecker.valueBindingAt(ctx.typeSolver(), target, name).ifPresent(bound -> {
-            throw new RefactorException("Cannot introduce a variable named '" + name + "': that name already "
+            throw new RefactorException(Check.REJECT_NAME_COLLISION, "Cannot introduce a variable named '" + name + "': that name already "
                     + "means " + bound + " here. The new variable would shadow it for the rest of the enclosing "
                     + "block, silently changing what every later unqualified '" + name + "' refers to.");
         });
@@ -889,7 +906,7 @@ public final class ExtractVariableRefactor {
                     || scopeRoot.findAll(Parameter.class).stream()
                     .anyMatch(p -> p.getNameAsString().equals(name));
             if (collides) {
-                throw new RefactorException("Cannot introduce a variable named '" + name + "': an enclosing "
+                throw new RefactorException(Check.REJECT_NAME_COLLISION, "Cannot introduce a variable named '" + name + "': an enclosing "
                         + "method/constructor/initializer/lambda already has a local variable or parameter with "
                         + "that name.");
             }

@@ -10,6 +10,7 @@
   <packaging>pom</packaging>
 
   <modules>
+    <module>obelisk-guard</module>
     <module>obelisk-core</module>
     <module>obelisk-cli</module>
   </modules>

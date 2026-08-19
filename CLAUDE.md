@@ -100,15 +100,18 @@ methods, initializers but not returns.
   measures *named methods* — a refusal written as an inline `throw` is
   invisible to it, and such refusals turned out to be systematically
   untested.
-- **Tests here pass for the wrong reason often** — three times, each costing
-  a review round or a mutation run to notice. `MessageDistinctivenessTest`
-  now enforces the fix: every phrase a refusal test asserts must appear in
-  exactly ONE check's message. Assert on a clause from the half of the
-  message that explains WHY, not a two-word fragment of what.
-  A caveat worth keeping: ~68 of 92 refusal assertions still only pin down
-  the message's *subject* (a class or field name from the fixture) rather
-  than which check fired. Not wrong, but not identifying either — strengthen
-  them opportunistically when touching a test.
+- **Every check has an identity.** `Check` (in `obelisk-guard`) is an enum,
+  so javac guarantees the IDs are distinct. `@Guard(Check.X)` on each
+  `reject*`/`verify*` method binds one to it, and `GuardProcessor` fails the
+  BUILD if two methods claim the same constant or if a check declares none.
+  `RefactorException` carries it.
+- **Assert on the ID and the message.** `expectRefused(Check.X, action)`
+  pins which check refused; `hasMessageContaining` then pins that its
+  message describes the right hazard. The ID is the contract, the message is
+  presentation — reword messages freely.
+  `MessageDistinctivenessTest` additionally forbids asserting a phrase that
+  more than one check's message contains.
+  Tests here passed for the wrong reason three times before this existed.
 - **`TestProject.rangeOf(file, snippet)`** locates expressions by text for
   extract-variable tests. Hand-counted columns have been wrong three times.
 - Fixtures deliberately write **no `pom.xml`** — that keeps them hermetic and

@@ -2,6 +2,7 @@ package dev.obelisk.core.refactor;
 
 import dev.obelisk.core.RefactorException;
 import dev.obelisk.core.testsupport.TestProject;
+import dev.obelisk.guard.Check;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -172,7 +173,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Flags", "positive")))
+            assertThat(p.expectRefused(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON, inline("Flags", "positive")))
                     .hasMessageContaining("'static' initializer block");
         }
 
@@ -199,7 +200,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "positive")))
+            assertThat(p.expectRefused(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON, inline("Util", "positive")))
                     .hasMessageContaining("com.example.Base")
                     .hasMessageContaining("inherits from");
         }
@@ -234,7 +235,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "positive")))
+            assertThat(p.expectRefused(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON, inline("Util", "positive")))
                     .hasMessageContaining("com.example.Marker");
         }
 
@@ -286,7 +287,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "positive")))
+            assertThat(p.expectRefused(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON, inline("Util", "positive")))
                     .hasMessageContaining("HANDLE");
         }
 
@@ -315,7 +316,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "positive")))
+            assertThat(p.expectRefused(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON, inline("Util", "positive")))
                     .hasMessageContaining("DEFAULT");
         }
     }
@@ -479,7 +480,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "scaled")))
+            assertThat(p.expectRefused(Check.REJECT_FREE_REFERENCES, inline("Util", "scaled")))
                     .hasMessageContaining("SCALE");
         }
 
@@ -496,7 +497,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "scaledImpl")))
+            assertThat(p.expectRefused(Check.REJECT_FREE_REFERENCES, inline("Util", "scaledImpl")))
                     .hasMessageContaining("scale");
         }
     }
@@ -523,7 +524,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "square")))
+            assertThat(p.expectRefused(Check.REJECT_UNSAFE_ARGUMENT_SUBSTITUTION, inline("Util", "square")))
                     .hasMessageContaining("referenced more than once");
         }
 
@@ -568,7 +569,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "pick")))
+            assertThat(p.expectRefused(Check.REJECT_UNSAFE_ARGUMENT_SUBSTITUTION, inline("Util", "pick")))
                     .hasMessageContaining("unused");
         }
 
@@ -595,7 +596,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "pick")))
+            assertThat(p.expectRefused(Check.REJECT_UNSAFE_ARGUMENT_SUBSTITUTION, inline("Util", "pick")))
                     .hasMessageContaining("unused");
         }
     }
@@ -622,7 +623,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Flags", "enabled")))
+            assertThat(p.expectRefused(Check.REJECT_CONSTANT_EXPRESSION_PROMOTION, inline("Flags", "enabled")))
                     .hasMessageContaining("doesn't reference any of its own parameters");
         }
 
@@ -643,7 +644,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_ALL_LITERAL_ARGUMENTS_CONSTANT_PROMOTION, inline("Util", "twice")))
                     .hasMessageContaining("every argument actually referenced by the method body");
         }
 
@@ -664,7 +665,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_ALL_LITERAL_ARGUMENTS_CONSTANT_PROMOTION, inline("Util", "twice")))
                     .hasMessageContaining("every argument actually referenced by the method body");
         }
 
@@ -686,7 +687,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_ALL_LITERAL_ARGUMENTS_CONSTANT_PROMOTION, inline("Util", "twice")))
                     .hasMessageContaining("every argument actually referenced by the method body");
         }
 
@@ -708,7 +709,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_ALL_LITERAL_ARGUMENTS_CONSTANT_PROMOTION, inline("Util", "twice")))
                     .hasMessageContaining("every argument actually referenced by the method body");
         }
 
@@ -729,7 +730,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "pick")))
+            assertThat(p.expectRefused(Check.REJECT_ALL_LITERAL_ARGUMENTS_CONSTANT_PROMOTION, inline("Util", "pick")))
                     .hasMessageContaining("every argument actually referenced by the method body");
         }
 
@@ -782,7 +783,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "half")))
+            assertThat(p.expectRefused(Check.REJECT_RETURN_TYPE_CONVERSION, inline("Util", "half")))
                     .hasMessageContaining("declared return type");
         }
 
@@ -803,7 +804,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "sum")))
+            assertThat(p.expectRefused(Check.REJECT_NON_PRIMITIVE_OPERANDS, inline("Util", "sum")))
                     .hasMessageContaining("isn't primitive");
         }
 
@@ -824,7 +825,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "join")))
+            assertThat(p.expectRefused(Check.REJECT_NON_PRIMITIVE_OPERANDS, inline("Util", "join")))
                     .hasMessageContaining("isn't primitive");
         }
 
@@ -845,7 +846,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "identity")))
+            assertThat(p.expectRefused(Check.REJECT_PARAMETER_TYPE_CONVERSION, inline("Util", "identity")))
                     .hasMessageContaining("declared\ntype".replace("\n", " "));
         }
 
@@ -869,7 +870,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "wrap")))
+            assertThat(p.expectRefused(Check.REJECT_POLY_EXPRESSION_ARGUMENT, inline("Util", "wrap")))
                     .hasMessageContaining("lambda or method reference");
         }
 
@@ -921,7 +922,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "scaled")))
+            assertThat(p.expectRefused(Check.REJECT_FREE_REFERENCES, inline("Util", "scaled")))
                     .hasMessageContaining("without a qualifier");
         }
 
@@ -948,7 +949,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "wrapped")))
+            assertThat(p.expectRefused(Check.REJECT_FREE_REFERENCES, inline("Util", "wrapped")))
                     .hasMessageContaining("references a type");
         }
 
@@ -964,7 +965,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "scaledImpl")))
+            assertThat(p.expectRefused(Check.REJECT_FREE_REFERENCES, inline("Util", "scaledImpl")))
                     .hasMessageContaining("'this'");
         }
 
@@ -986,7 +987,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "read")))
+            assertThat(p.expectRefused(Check.REJECT_INACCESSIBLE_FIELD, inline("Util", "read")))
                     .hasMessageContaining("declaring type isn't public");
         }
     }
@@ -1079,7 +1080,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_VIRTUAL_DISPATCH_RISK, inline("Util", "twice")))
                     .hasMessageContaining("only static or private methods");
         }
 
@@ -1096,7 +1097,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_UNSUPPORTED_SHAPE, inline("Util", "twice")))
                     .hasMessageContaining("single 'return <expr>;'");
         }
 
@@ -1110,7 +1111,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_SYNCHRONIZED, inline("Util", "twice")))
                     .hasMessageContaining("synchronized");
         }
 
@@ -1124,7 +1125,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_THROWS_CLAUSE, inline("Util", "twice")))
                     .hasMessageContaining("'throws' clause");
         }
 
@@ -1138,7 +1139,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "first")))
+            assertThat(p.expectRefused(Check.REJECT_UNSUPPORTED_SHAPE, inline("Util", "first")))
                     .hasMessageContaining("varargs");
         }
 
@@ -1152,7 +1153,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "identity")))
+            assertThat(p.expectRefused(Check.REJECT_UNSUPPORTED_SHAPE, inline("Util", "identity")))
                     .hasMessageContaining("type parameters");
         }
 
@@ -1173,7 +1174,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_METHOD_REFERENCE_USE, inline("Util", "twice")))
                     .hasMessageContaining("can't be textually inlined");
         }
 

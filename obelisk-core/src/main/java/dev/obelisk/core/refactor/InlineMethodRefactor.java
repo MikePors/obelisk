@@ -1,5 +1,7 @@
 package dev.obelisk.core.refactor;
 
+import dev.obelisk.guard.Check;
+import dev.obelisk.guard.Guard;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
@@ -437,21 +439,23 @@ public final class InlineMethodRefactor {
      * tools/mutation-check.sh} can reach it; that script only mutates calls
      * to named {@code reject*}/{@code verify*} methods.
      */
+    @Guard(Check.REJECT_METHOD_REFERENCE_USE)
     private static void rejectMethodReferenceUse(ResolvedMethodDeclaration resolvedRef, String targetSignature,
                                                    MethodReferenceExpr ref, String methodName, Path file) {
         if (resolvedRef.getQualifiedSignature().equals(targetSignature)) {
-            throw new RefactorException("Cannot inline '" + methodName + "': it's referenced via "
+            throw new RefactorException(Check.REJECT_METHOD_REFERENCE_USE, "Cannot inline '" + methodName + "': it's referenced via "
                     + "a method reference ('" + ref + "' in " + file + "), which can't "
                     + "be textually inlined the way a call site can.");
         }
     }
 
     /** Refuses a call to the target nested inside another call to the same method. */
+    @Guard(Check.REJECT_NESTED_SELF_CALL)
     private static void rejectNestedSelfCall(MethodCallExpr call, List<MethodCallExpr> matchedCalls,
                                                String methodName) {
         for (MethodCallExpr already : matchedCalls) {
             if (isDescendant(call, already) || isDescendant(already, call)) {
-                throw new RefactorException("Cannot inline '" + methodName + "': a call to it at "
+                throw new RefactorException(Check.REJECT_NESTED_SELF_CALL, "Cannot inline '" + methodName + "': a call to it at "
                         + call.getBegin().map(Object::toString).orElse("?") + " is nested inside another "
                         + "call to the same method -- not supported in this version.");
             }
@@ -634,6 +638,7 @@ public final class InlineMethodRefactor {
      * promotion, statement-position legality, a lost {@code synchronized}.
      * Those remain the job of the preconditions above.
      */
+    @Guard(Check.VERIFY_BINDINGS_PRESERVED)
     private static void verifyBindingsPreserved(List<PlannedInline> plannedInlines, String methodName) {
         for (PlannedInline plan : plannedInlines) {
             String position = plan.call.getBegin().map(Object::toString).orElse("?");
@@ -641,7 +646,7 @@ public final class InlineMethodRefactor {
             try {
                 actual = plan.substituted.calculateResolvedType().describe();
             } catch (RuntimeException e) {
-                throw new RefactorException("Refusing to inline '" + methodName + "': after substituting at "
+                throw new RefactorException(Check.VERIFY_BINDINGS_PRESERVED, "Refusing to inline '" + methodName + "': after substituting at "
                         + position + ", the resulting expression ('" + plan.substituted + "') could no longer be "
                         + "resolved in its new context (" + e.getMessage() + "). Nothing has been written. This is "
                         + "a post-transformation safety check -- the substitution passed every precondition but "
@@ -650,7 +655,7 @@ public final class InlineMethodRefactor {
             }
             if (!actual.equals(plan.originalTypeDescribe)
                     && !stripWildcardBound(actual).equals(stripWildcardBound(plan.originalTypeDescribe))) {
-                throw new RefactorException("Refusing to inline '" + methodName + "': the call at " + position
+                throw new RefactorException(Check.VERIFY_BINDINGS_PRESERVED, "Refusing to inline '" + methodName + "': the call at " + position
                         + " had type '" + plan.originalTypeDescribe + "', but the expression replacing it ('"
                         + plan.substituted + "') has type '" + actual + "' in that position -- the surrounding code "
                         + "would see a different type than it did before, which can change overload selection, "
@@ -672,13 +677,14 @@ public final class InlineMethodRefactor {
      * that used to refuse these references outright is gone, replaced by
      * repair-then-verify.
      */
+    @Guard(Check.VERIFY_REPAIRS_BIND_TO_ORIGINAL_DECLARATION)
     private static void verifyRepairsBindToOriginalDeclaration(PlannedInline plan, String methodName,
                                                                  String position) {
         for (String expected : plan.repairedBindings) {
             FieldAccessExpr repaired = plan.substituted.findAll(FieldAccessExpr.class).stream()
                     .filter(fa -> fa.toString().equals(expected))
                     .findFirst()
-                    .orElseThrow(() -> new RefactorException("Refusing to inline '" + methodName + "': the "
+                    .orElseThrow(() -> new RefactorException(Check.VERIFY_REPAIRS_BIND_TO_ORIGINAL_DECLARATION, "Refusing to inline '" + methodName + "': the "
                             + "re-qualified reference '" + expected + "' expected at " + position + " isn't present "
                             + "in the substituted expression ('" + plan.substituted + "') -- the repair didn't "
                             + "survive the rewrite. Nothing has been written."));
@@ -686,7 +692,7 @@ public final class InlineMethodRefactor {
             try {
                 var resolved = repaired.resolve();
                 if (!(resolved instanceof com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration f)) {
-                    throw new RefactorException("Refusing to inline '" + methodName + "': the re-qualified "
+                    throw new RefactorException(Check.VERIFY_REPAIRS_BIND_TO_ORIGINAL_DECLARATION, "Refusing to inline '" + methodName + "': the re-qualified "
                             + "reference '" + expected + "' at " + position + " no longer resolves to a field at "
                             + "all. Nothing has been written.");
                 }
@@ -694,13 +700,13 @@ public final class InlineMethodRefactor {
             } catch (RefactorException e) {
                 throw e;
             } catch (RuntimeException e) {
-                throw new RefactorException("Refusing to inline '" + methodName + "': the re-qualified reference '"
+                throw new RefactorException(Check.VERIFY_REPAIRS_BIND_TO_ORIGINAL_DECLARATION, "Refusing to inline '" + methodName + "': the re-qualified reference '"
                         + expected + "' at " + position + " could not be resolved in its new context ("
                         + e.getMessage() + ") -- the call site may not be able to see that type. Nothing has been "
                         + "written.", e);
             }
             if (!actual.equals(expected)) {
-                throw new RefactorException("Refusing to inline '" + methodName + "': the re-qualified reference '"
+                throw new RefactorException(Check.VERIFY_REPAIRS_BIND_TO_ORIGINAL_DECLARATION, "Refusing to inline '" + methodName + "': the re-qualified reference '"
                         + expected + "' at " + position + " binds to '" + actual + "' there instead -- the repair "
                         + "did not preserve the original binding. Nothing has been written.");
             }
@@ -715,6 +721,7 @@ public final class InlineMethodRefactor {
      * value, so it's excused via the same {@link #isPureTypeQualifier} test
      * used for call receivers.
      */
+    @Guard(Check.VERIFY_EVERYTHING_STILL_RESOLVES)
     private static void verifyEverythingStillResolves(PlannedInline plan, String methodName, String position) {
         for (NameExpr name : plan.substituted.findAll(NameExpr.class)) {
             if (isPureTypeQualifier(name)) {
@@ -723,7 +730,7 @@ public final class InlineMethodRefactor {
             try {
                 name.resolve();
             } catch (RuntimeException e) {
-                throw new RefactorException("Refusing to inline '" + methodName + "': after substituting at "
+                throw new RefactorException(Check.VERIFY_EVERYTHING_STILL_RESOLVES, "Refusing to inline '" + methodName + "': after substituting at "
                         + position + ", the name '" + name + "' in the resulting expression no longer resolves in "
                         + "its new context (" + e.getMessage() + ") -- it bound to something at its original "
                         + "location that isn't reachable here. Nothing has been written.", e);
@@ -742,7 +749,7 @@ public final class InlineMethodRefactor {
             try {
                 fieldAccess.resolve();
             } catch (RuntimeException e) {
-                throw new RefactorException("Refusing to inline '" + methodName + "': after substituting at "
+                throw new RefactorException(Check.VERIFY_EVERYTHING_STILL_RESOLVES, "Refusing to inline '" + methodName + "': after substituting at "
                         + position + ", the field access '" + fieldAccess + "' in the resulting expression no "
                         + "longer resolves in its new context (" + e.getMessage() + "). Nothing has been written.",
                         e);
@@ -752,7 +759,7 @@ public final class InlineMethodRefactor {
             try {
                 nested.resolve();
             } catch (RuntimeException e) {
-                throw new RefactorException("Refusing to inline '" + methodName + "': after substituting at "
+                throw new RefactorException(Check.VERIFY_EVERYTHING_STILL_RESOLVES, "Refusing to inline '" + methodName + "': after substituting at "
                         + position + ", the call '" + nested + "' in the resulting expression no longer resolves in "
                         + "its new context (" + e.getMessage() + ") -- it may now bind to a different method than "
                         + "it did originally. Nothing has been written.", e);
@@ -783,6 +790,7 @@ public final class InlineMethodRefactor {
      * short-circuit/ternary in the body turning a previously-always-run
      * argument into a conditionally-run one.
      */
+    @Guard(Check.REJECT_UNSAFE_ARGUMENT_SUBSTITUTION)
     private static void rejectUnsafeArgumentSubstitution(MethodCallExpr call, Expression returnExpr,
                                                            List<Parameter> parameters, List<Integer> paramIndexPerNode,
                                                            String methodName) {
@@ -839,7 +847,7 @@ public final class InlineMethodRefactor {
                     + "method body"
                     : !safeByPattern ? "is referenced out of order relative to the call's other arguments"
                     : "is one of more than one parameter in this call";
-            throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+            throw new RefactorException(Check.REJECT_UNSAFE_ARGUMENT_SUBSTITUTION, "Cannot inline call to '" + methodName + "' at "
                     + call.getBegin().map(Object::toString).orElse("?") + ": parameter '"
                     + parameters.get(i).getNameAsString() + "' " + reason + ", and its argument here ('"
                     + call.getArgument(i) + "') isn't obviously side-effect-free -- inlining could change when, "
@@ -925,6 +933,7 @@ public final class InlineMethodRefactor {
      * own side effect entirely -- an earlier version of this check treated
      * EVERY static-method scope as automatically safe, which missed this.
      */
+    @Guard(Check.REJECT_UNSAFE_RECEIVER)
     private static void rejectUnsafeReceiver(MethodCallExpr call, boolean isStatic, String methodName) {
         Optional<Expression> scope = call.getScope();
         if (scope.isEmpty()) {
@@ -934,7 +943,7 @@ public final class InlineMethodRefactor {
             if (isPureTypeQualifier(scope.get())) {
                 return;
             }
-            throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+            throw new RefactorException(Check.REJECT_UNSAFE_RECEIVER, "Cannot inline call to '" + methodName + "' at "
                     + call.getBegin().map(Object::toString).orElse("?") + ": it's qualified by an expression ('"
                     + scope.get() + "') rather than just the class name -- Java still evaluates that expression "
                     + "(and discards the result) before a static call, so deleting the call entirely would "
@@ -943,7 +952,7 @@ public final class InlineMethodRefactor {
         if (scope.get() instanceof ThisExpr thisExpr && thisExpr.getTypeName().isEmpty()) {
             return;
         }
-        throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+        throw new RefactorException(Check.REJECT_UNSAFE_RECEIVER, "Cannot inline call to '" + methodName + "' at "
                 + call.getBegin().map(Object::toString).orElse("?") + ": it has an explicit receiver ('"
                 + scope.get() + "') -- inlining a non-static method would rebind any unqualified field/method "
                 + "reference inside its body to the CALL SITE's own instance instead, which is only safe for an "
@@ -992,6 +1001,7 @@ public final class InlineMethodRefactor {
      * wrapping requires -- confirmed via repro that inlining into a bare
      * statement position produces "not a statement" compile errors.
      */
+    @Guard(Check.REJECT_STATEMENT_POSITION)
     private static void rejectStatementPosition(MethodCallExpr call, String methodName) {
         Node parent = call.getParentNode().orElse(null);
         if (parent instanceof ExpressionStmt stmt) {
@@ -1014,7 +1024,7 @@ public final class InlineMethodRefactor {
             // guessing wrong again; the value-compatible convenience case
             // is a known, accepted cost of that.
             if (stmtParent instanceof LambdaExpr) {
-                throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+                throw new RefactorException(Check.REJECT_STATEMENT_POSITION, "Cannot inline call to '" + methodName + "' at "
                         + call.getBegin().map(Object::toString).orElse("?") + ": it's the (sole) body of a lambda "
                         + "expression -- if the lambda's target is a void-compatible functional interface (e.g. "
                         + "'Runnable', 'Consumer'), the substituted expression wouldn't be legal there, and "
@@ -1034,7 +1044,7 @@ public final class InlineMethodRefactor {
                     && entry.getParentNode().orElse(null) instanceof com.github.javaparser.ast.expr.SwitchExpr) {
                 return;
             }
-            throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+            throw new RefactorException(Check.REJECT_STATEMENT_POSITION, "Cannot inline call to '" + methodName + "' at "
                     + call.getBegin().map(Object::toString).orElse("?") + ": it's used as a bare statement "
                     + "(its result discarded) -- the substituted expression generally isn't legal Java in "
                     + "that position. Not supported in this version.");
@@ -1047,7 +1057,7 @@ public final class InlineMethodRefactor {
         // inlining and failed with a syntax error after).
         if (parent instanceof com.github.javaparser.ast.stmt.ForStmt forStmt
                 && (forStmt.getUpdate().contains(call) || forStmt.getInitialization().contains(call))) {
-            throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+            throw new RefactorException(Check.REJECT_STATEMENT_POSITION, "Cannot inline call to '" + methodName + "' at "
                     + call.getBegin().map(Object::toString).orElse("?") + ": it's used in a for-loop's own "
                     + "initialization/update clause -- the substituted expression generally isn't legal Java in "
                     + "that position. Not supported in this version.");
@@ -1100,6 +1110,7 @@ public final class InlineMethodRefactor {
      * (no fields, no {@code this}/{@code super}, no unqualified calls, no
      * type references) is unaffected by any of this.
      */
+    @Guard(Check.REJECT_FREE_REFERENCES)
     private static void rejectFreeReferences(Expression returnExpr, MethodDeclaration targetMethod) {
         for (NameExpr name : returnExpr.findAll(NameExpr.class)) {
             if (resolveAsOwnParameter(name, targetMethod).isPresent()) {
@@ -1113,7 +1124,7 @@ public final class InlineMethodRefactor {
             if (asRepairableStaticField(name, targetMethod).isPresent()) {
                 continue;
             }
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+            throw new RefactorException(Check.REJECT_FREE_REFERENCES, "Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                     + "references '" + name + "', which isn't one of its own parameters and isn't a public static "
                     + "field this refactor can re-qualify -- inlining would resolve that name against the CALL "
                     + "SITE's context instead of its original declaring class, which isn't supported in this "
@@ -1121,7 +1132,7 @@ public final class InlineMethodRefactor {
         }
         for (MethodCallExpr call : returnExpr.findAll(MethodCallExpr.class)) {
             if (call.getScope().isEmpty()) {
-                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+                throw new RefactorException(Check.REJECT_FREE_REFERENCES, "Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                         + "calls '" + call.getNameAsString() + "(...)' without a qualifier -- inlining would "
                         + "resolve that call against the CALL SITE's context instead of its original declaring "
                         + "class, which isn't supported in this version.");
@@ -1129,7 +1140,7 @@ public final class InlineMethodRefactor {
         }
         if (!returnExpr.findAll(com.github.javaparser.ast.expr.ThisExpr.class).isEmpty()
                 || !returnExpr.findAll(com.github.javaparser.ast.expr.SuperExpr.class).isEmpty()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+            throw new RefactorException(Check.REJECT_FREE_REFERENCES, "Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                     + "references 'this' or 'super' -- inlining could rebind that to the CALL SITE's own instance "
                     + "instead of the original receiver (e.g. when the call site is inside an inner or anonymous "
                     + "class nested in the declaring class), which isn't supported in this version.");
@@ -1146,7 +1157,7 @@ public final class InlineMethodRefactor {
             // confirmed via review that a ClassOrInterfaceType-only ban lets
             // a primitive cast or `new int[]{...}` through despite this
             // method's own doc claiming "no cast, no new" outright.
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+            throw new RefactorException(Check.REJECT_FREE_REFERENCES, "Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                     + "references a type (a cast, 'new', an array type, 'instanceof', '.class', or a generic type "
                     + "argument) -- inlining would resolve that type name against the CALL SITE's imports instead "
                     + "of the method's original declaring file, which isn't supported in this version.");
@@ -1256,6 +1267,7 @@ public final class InlineMethodRefactor {
      * Requiring public-all-the-way-up sidesteps needing to know each call
      * site's own package/class at body-analysis time.
      */
+    @Guard(Check.REJECT_INACCESSIBLE_FIELD)
     private static void rejectInaccessibleField(FieldAccessExpr fieldAccess, MethodDeclaration targetMethod) {
         try {
             ResolvedValueDeclaration resolved = fieldAccess.resolve();
@@ -1268,7 +1280,7 @@ public final class InlineMethodRefactor {
                 // check. Found by auditing every ResolvedFieldDeclaration
                 // test in this file after enum constants had already caused
                 // two separate bugs elsewhere.
-                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+                throw new RefactorException(Check.REJECT_INACCESSIBLE_FIELD, "Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                         + "reads '" + fieldAccess + "', which doesn't resolve to a plain field, so whether every "
                         + "call site can access it can't be verified. Not supported in this version.");
             }
@@ -1278,13 +1290,13 @@ public final class InlineMethodRefactor {
             // already handled this; this check did not.
             boolean implicitlyPublic = isDeclaredInInterface(field.declaringType());
             if (!implicitlyPublic && field.accessSpecifier() != com.github.javaparser.ast.AccessSpecifier.PUBLIC) {
-                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+                throw new RefactorException(Check.REJECT_INACCESSIBLE_FIELD, "Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                         + "reads '" + fieldAccess + "', a non-public field -- inlining would splice that access "
                         + "into every call site, some of which may not have access to it (confirmed via repro to "
                         + "produce a project that no longer compiles). Not supported in this version.");
             }
             if (isTypeOrEnclosingTypeNonPublic(field.declaringType())) {
-                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+                throw new RefactorException(Check.REJECT_INACCESSIBLE_FIELD, "Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                         + "reads '" + fieldAccess + "', whose declaring type isn't public (or is nested inside a "
                         + "non-public one) -- even though the field itself is public, a call site elsewhere may "
                         + "not have access to the TYPE that declares it (confirmed via repro to produce a project "
@@ -1293,7 +1305,7 @@ public final class InlineMethodRefactor {
         } catch (RefactorException e) {
             throw e;
         } catch (RuntimeException e) {
-            throw new RefactorException("Could not resolve field access '" + fieldAccess + "' in '"
+            throw new RefactorException(Check.REJECT_INACCESSIBLE_FIELD, "Could not resolve field access '" + fieldAccess + "' in '"
                     + targetMethod.getNameAsString() + "' for an accessibility check: " + e.getMessage(), e);
         }
     }
@@ -1359,11 +1371,12 @@ public final class InlineMethodRefactor {
      * method that writes to its own parameter isn't a pure expression
      * method in the sense this refactor requires at all.
      */
+    @Guard(Check.REJECT_PARAMETER_WRITES)
     private static void rejectParameterWrites(Expression returnExpr, MethodDeclaration targetMethod) {
         for (var assign : returnExpr.findAll(com.github.javaparser.ast.expr.AssignExpr.class)) {
             if (assign.getTarget() instanceof NameExpr target
                     && resolveAsOwnParameter(target, targetMethod).isPresent()) {
-                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+                throw new RefactorException(Check.REJECT_PARAMETER_WRITES, "Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                         + "assigns to its own parameter '" + target + "' -- substituting the call's argument "
                         + "expression into that write position would either mutate the caller's variable or "
                         + "produce illegal Java, depending on what's passed. Not supported in this version.");
@@ -1375,7 +1388,7 @@ public final class InlineMethodRefactor {
             }
             if (unary.getExpression() instanceof NameExpr operand
                     && resolveAsOwnParameter(operand, targetMethod).isPresent()) {
-                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body "
+                throw new RefactorException(Check.REJECT_PARAMETER_WRITES, "Cannot inline '" + targetMethod.getNameAsString() + "': its body "
                         + "applies '" + unary.getOperator().asString() + "' to its own parameter '" + operand
                         + "' -- substituting the call's argument expression into that write position would "
                         + "either mutate the caller's variable or produce illegal Java, depending on what's "
@@ -1412,16 +1425,17 @@ public final class InlineMethodRefactor {
      * already unreachable here since it always requires a type reference,
      * which {@link #rejectFreeReferences} already bans outright.)
      */
+    @Guard(Check.REJECT_DEFERRED_EVALUATION_CONSTRUCTS)
     private static void rejectDeferredEvaluationConstructs(Expression returnExpr, MethodDeclaration targetMethod) {
         if (!returnExpr.findAll(LambdaExpr.class).isEmpty()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body contains "
+            throw new RefactorException(Check.REJECT_DEFERRED_EVALUATION_CONSTRUCTS, "Cannot inline '" + targetMethod.getNameAsString() + "': its body contains "
                     + "a lambda expression -- a lambda can capture the call site's own same-named local/field "
                     + "instead of a substituted argument, or defer evaluation of one to whenever the lambda "
                     + "actually runs instead of the original call's eager, once-only evaluation. Not supported in "
                     + "this version.");
         }
         if (!returnExpr.findAll(MethodReferenceExpr.class).isEmpty()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body contains "
+            throw new RefactorException(Check.REJECT_DEFERRED_EVALUATION_CONSTRUCTS, "Cannot inline '" + targetMethod.getNameAsString() + "': its body contains "
                     + "a method reference -- same capture/deferred-evaluation hazards as a lambda. Not supported "
                     + "in this version.");
         }
@@ -1449,21 +1463,22 @@ public final class InlineMethodRefactor {
      * can only read its own parameters, literals, and operators on them:
      * provably free of both side effects and evaluation-order risk.
      */
+    @Guard(Check.REJECT_MUTATING_OR_CALL_EXPRESSIONS)
     private static void rejectMutatingOrCallExpressions(Expression returnExpr, MethodDeclaration targetMethod) {
         if (!returnExpr.findAll(MethodCallExpr.class).isEmpty()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body calls a "
+            throw new RefactorException(Check.REJECT_MUTATING_OR_CALL_EXPRESSIONS, "Cannot inline '" + targetMethod.getNameAsString() + "': its body calls a "
                     + "method -- a call's side effects (if any) have no verified ordering relationship to the "
                     + "call site's own remaining arguments once substituted into their textual position, which "
                     + "could silently change evaluation order. Not supported in this version.");
         }
         if (!returnExpr.findAll(com.github.javaparser.ast.expr.AssignExpr.class).isEmpty()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body contains "
+            throw new RefactorException(Check.REJECT_MUTATING_OR_CALL_EXPRESSIONS, "Cannot inline '" + targetMethod.getNameAsString() + "': its body contains "
                     + "an assignment -- same evaluation-order risk as a method call. Not supported in this "
                     + "version.");
         }
         if (returnExpr.findAll(com.github.javaparser.ast.expr.UnaryExpr.class).stream()
                 .anyMatch(InlineMethodRefactor::isIncrementOrDecrement)) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body applies "
+            throw new RefactorException(Check.REJECT_MUTATING_OR_CALL_EXPRESSIONS, "Cannot inline '" + targetMethod.getNameAsString() + "': its body applies "
                     + "'++' or '--' -- same evaluation-order risk as a method call. Not supported in this "
                     + "version.");
         }
@@ -1490,6 +1505,7 @@ public final class InlineMethodRefactor {
      * it. Requiring every operand to already be a primitive closes both:
      * primitive-to-primitive arithmetic/comparison never invokes anything.
      */
+    @Guard(Check.REJECT_NON_PRIMITIVE_OPERANDS)
     private static void rejectNonPrimitiveOperands(Expression returnExpr, String methodName) {
         for (BinaryExpr binary : returnExpr.findAll(BinaryExpr.class)) {
             requirePrimitiveOperand(binary.getLeft(), methodName);
@@ -1526,11 +1542,11 @@ public final class InlineMethodRefactor {
         try {
             type = operand.calculateResolvedType();
         } catch (RuntimeException e) {
-            throw new RefactorException("Could not determine the type of '" + operand + "' in '" + methodName
+            throw new RefactorException(Check.REJECT_NON_PRIMITIVE_OPERANDS, "Could not determine the type of '" + operand + "' in '" + methodName
                     + "' for an implicit-conversion safety check: " + e.getMessage(), e);
         }
         if (!type.isPrimitive()) {
-            throw new RefactorException("Cannot inline '" + methodName + "': its body applies an operator to '"
+            throw new RefactorException(Check.REJECT_NON_PRIMITIVE_OPERANDS, "Cannot inline '" + methodName + "': its body applies an operator to '"
                     + operand + "', whose type ('" + type.describe() + "') isn't primitive -- an operator on a "
                     + "non-primitive operand can implicitly invoke something (unboxing, 'toString()' for string "
                     + "concatenation, ...) that has no AST node of its own for this refactor's method-call ban to "
@@ -1555,11 +1571,12 @@ public final class InlineMethodRefactor {
      * constant, which javac inlines into the BYTECODE of every other class
      * that reads it -- an ABI-level change no source-level diff shows.
      */
+    @Guard(Check.REJECT_CONSTANT_EXPRESSION_PROMOTION)
     private static void rejectConstantExpressionPromotion(Expression returnExpr, MethodDeclaration targetMethod) {
         boolean referencesAnyParameter = returnExpr.findAll(NameExpr.class).stream()
                 .anyMatch(name -> resolveAsOwnParameter(name, targetMethod).isPresent());
         if (!referencesAnyParameter) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its return "
+            throw new RefactorException(Check.REJECT_CONSTANT_EXPRESSION_PROMOTION, "Cannot inline '" + targetMethod.getNameAsString() + "': its return "
                     + "expression doesn't reference any of its own parameters, so after inlining it would become "
                     + "IDENTICAL at every call site -- Java's compiler treats that as a compile-time constant "
                     + "expression, unlike the original method call, which can change loop/branch reachability "
@@ -1608,12 +1625,13 @@ public final class InlineMethodRefactor {
      * compile-time constant, even though {@code nonConstant} itself isn't
      * one.
      */
+    @Guard(Check.REJECT_ALL_LITERAL_ARGUMENTS_CONSTANT_PROMOTION)
     private static void rejectAllLiteralArgumentsConstantPromotion(MethodCallExpr call, Expression returnExpr,
                                                                      MethodDeclaration targetMethod, String methodName) {
         Set<Integer> referencedParamIndices = referencedParameterIndices(returnExpr, targetMethod);
         if (!referencedParamIndices.isEmpty() && referencedParamIndices.stream()
                 .allMatch(i -> mightBeConstantExpression(call.getArgument(i)))) {
-            throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+            throw new RefactorException(Check.REJECT_ALL_LITERAL_ARGUMENTS_CONSTANT_PROMOTION, "Cannot inline call to '" + methodName + "' at "
                     + call.getBegin().map(Object::toString).orElse("?") + ": every argument actually referenced by "
                     + "the method body is a compile-time constant expression, so the substituted expression would "
                     + "be a compile-time constant at this call site, unlike the original method call -- same "
@@ -1865,9 +1883,10 @@ public final class InlineMethodRefactor {
      * method -- see the class-level doc for why any other instance method
      * carries a virtual-dispatch risk this refactor can't safely rule out.
      */
+    @Guard(Check.REJECT_VIRTUAL_DISPATCH_RISK)
     private static void rejectVirtualDispatchRisk(MethodDeclaration targetMethod) {
         if (!targetMethod.isStatic() && !targetMethod.isPrivate()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': only static or "
+            throw new RefactorException(Check.REJECT_VIRTUAL_DISPATCH_RISK, "Cannot inline '" + targetMethod.getNameAsString() + "': only static or "
                     + "private methods can be inlined in this version -- any other instance method is subject to "
                     + "virtual dispatch, and a call site typed as an ancestor class/interface could dispatch to "
                     + "this exact override at runtime without this refactor's call-site scan ever finding it "
@@ -1884,9 +1903,10 @@ public final class InlineMethodRefactor {
      * data race with no error, warning, or even a non-concurrent test able
      * to catch it.
      */
+    @Guard(Check.REJECT_SYNCHRONIZED)
     private static void rejectSynchronized(MethodDeclaration targetMethod) {
         if (targetMethod.isSynchronized()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': it's "
+            throw new RefactorException(Check.REJECT_SYNCHRONIZED, "Cannot inline '" + targetMethod.getNameAsString() + "': it's "
                     + "'synchronized' -- inlining would silently drop the monitor acquisition. Not supported in "
                     + "this version.");
         }
@@ -1903,9 +1923,10 @@ public final class InlineMethodRefactor {
      * verify a body actually throws (or doesn't throw) anything it declares,
      * so it refuses any {@code throws} clause outright rather than guess.
      */
+    @Guard(Check.REJECT_THROWS_CLAUSE)
     private static void rejectThrowsClause(MethodDeclaration targetMethod) {
         if (!targetMethod.getThrownExceptions().isEmpty()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': it declares a "
+            throw new RefactorException(Check.REJECT_THROWS_CLAUSE, "Cannot inline '" + targetMethod.getNameAsString() + "': it declares a "
                     + "'throws' clause -- a call site's own 'catch' for a declared-but-never-actually-thrown "
                     + "exception would become unreachable once the call is replaced by a plain expression. Not "
                     + "supported in this version.");
@@ -1957,6 +1978,7 @@ public final class InlineMethodRefactor {
      * before any user code runs at all and so can never be the thing a
      * deleted call site was still triggering.
      */
+    @Guard(Check.REJECT_DECLARING_TYPE_STATIC_INITIALIZATION_EFFECT)
     private static void rejectDeclaringTypeStaticInitializationEffect(TypeDeclaration<?> targetClass,
                                                                         MethodDeclaration targetMethod) {
         rejectStaticInitializationEffectOn(targetClass, targetClass.getNameAsString(), targetMethod, "its declaring "
@@ -1966,7 +1988,7 @@ public final class InlineMethodRefactor {
         try {
             resolvedClass = targetClass.resolve();
         } catch (RuntimeException e) {
-            throw new RefactorException("Could not resolve '" + targetClass.getNameAsString() + "' to check its "
+            throw new RefactorException(Check.REJECT_DECLARING_TYPE_STATIC_INITIALIZATION_EFFECT, "Could not resolve '" + targetClass.getNameAsString() + "' to check its "
                     + "ancestors for static-initialization effects: " + e.getMessage(), e);
         }
         // NameBindingChecker.ancestorsOf, not getAllAncestors(): the latter
@@ -1976,7 +1998,7 @@ public final class InlineMethodRefactor {
         for (var ancestor : NameBindingChecker.ancestorsOf(resolvedClass, targetClass)) {
             var declOpt = ancestor.getTypeDeclaration();
             if (declOpt.isEmpty()) {
-                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': an ancestor of "
+                throw new RefactorException(Check.REJECT_DECLARING_TYPE_STATIC_INITIALIZATION_EFFECT, "Cannot inline '" + targetMethod.getNameAsString() + "': an ancestor of "
                         + "its declaring type ('" + ancestor.describe() + "') couldn't be resolved, so whether "
                         + "initializing it has an observable effect (JLS 12.4.2) can't be checked. Refusing rather "
                         + "than guess.");
@@ -1996,7 +2018,7 @@ public final class InlineMethodRefactor {
             }
             var ast = decl.toAst(TypeDeclaration.class);
             if (ast.isEmpty()) {
-                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its declaring "
+                throw new RefactorException(Check.REJECT_DECLARING_TYPE_STATIC_INITIALIZATION_EFFECT, "Cannot inline '" + targetMethod.getNameAsString() + "': its declaring "
                         + "type inherits from '" + decl.getQualifiedName() + "', which has no source available to "
                         + "check for static-initialization effects -- initializing the declaring type would also "
                         + "initialize that type (JLS 12.4.2), and deleting every call site could silently drop the "
@@ -2016,10 +2038,11 @@ public final class InlineMethodRefactor {
      * the same test applies to the declaring type itself and to each
      * ancestor.
      */
+    @Guard(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON)
     private static void rejectStaticInitializationEffectOn(TypeDeclaration<?> type, String typeName,
                                                              MethodDeclaration targetMethod, String description) {
         if (type instanceof com.github.javaparser.ast.body.EnumDeclaration) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': " + description
+            throw new RefactorException(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON, "Cannot inline '" + targetMethod.getNameAsString() + "': " + description
                     + " is an enum, which always has its own static initialization effect (constructing its "
                     + "constants) that invoking one of its methods would otherwise trigger -- deleting every call "
                     + "could silently drop the only thing still causing that to happen. Not supported in this "
@@ -2027,7 +2050,7 @@ public final class InlineMethodRefactor {
         }
         for (var member : type.getMembers()) {
             if (member instanceof com.github.javaparser.ast.body.InitializerDeclaration init && init.isStatic()) {
-                throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': " + description
+                throw new RefactorException(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON, "Cannot inline '" + targetMethod.getNameAsString() + "': " + description
                         + " has a 'static' initializer block -- invoking a method on this class triggers that block "
                         + "to run (JLS 12.4.1) if it hasn't already; deleting every call site could silently drop "
                         + "the one thing still guaranteeing that happens. Not supported in this version.");
@@ -2042,7 +2065,7 @@ public final class InlineMethodRefactor {
                             .map(InlineMethodRefactor::isDefinitelyConstantExpression)
                             .orElse(false);
                     if (!constantInit) {
-                        throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': "
+                        throw new RefactorException(Check.REJECT_STATIC_INITIALIZATION_EFFECT_ON, "Cannot inline '" + targetMethod.getNameAsString() + "': "
                                 + description + " has a 'static' field ('" + vd.getNameAsString() + "') whose "
                                 + "initializer isn't a compile-time constant expression -- evaluating it is part of "
                                 + "that class's <clinit>, which invoking a method on this class triggers (JLS "
@@ -2054,25 +2077,26 @@ public final class InlineMethodRefactor {
         }
     }
 
+    @Guard(Check.REJECT_UNSUPPORTED_SHAPE)
     private static void rejectUnsupportedShape(MethodDeclaration targetMethod) {
         if (!targetMethod.getTypeParameters().isEmpty()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': it declares its "
+            throw new RefactorException(Check.REJECT_UNSUPPORTED_SHAPE, "Cannot inline '" + targetMethod.getNameAsString() + "': it declares its "
                     + "own type parameters (a generic method) -- not supported in this version.");
         }
         if (!targetMethod.getParameters().isEmpty()
                 && targetMethod.getParameters().get(targetMethod.getParameters().size() - 1).isVarArgs()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': it has a varargs "
+            throw new RefactorException(Check.REJECT_UNSUPPORTED_SHAPE, "Cannot inline '" + targetMethod.getNameAsString() + "': it has a varargs "
                     + "parameter -- not supported in this version.");
         }
         java.util.Optional<BlockStmt> body = targetMethod.getBody();
         if (body.isEmpty()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString()
+            throw new RefactorException(Check.REJECT_UNSUPPORTED_SHAPE, "Cannot inline '" + targetMethod.getNameAsString()
                     + "': it has no body (abstract or native).");
         }
         List<Statement> statements = body.get().getStatements();
         if (statements.size() != 1 || !(statements.get(0) instanceof ReturnStmt returnStmt)
                 || returnStmt.getExpression().isEmpty()) {
-            throw new RefactorException("Cannot inline '" + targetMethod.getNameAsString() + "': its body isn't "
+            throw new RefactorException(Check.REJECT_UNSUPPORTED_SHAPE, "Cannot inline '" + targetMethod.getNameAsString() + "': its body isn't "
                     + "exactly a single 'return <expr>;' statement -- only single-expression methods are "
                     + "supported in this version.");
         }
@@ -2093,6 +2117,7 @@ public final class InlineMethodRefactor {
      * silently picked a DIFFERENT overload ({@code List.remove(int)} vs.
      * {@code remove(Object)}) at the call site.
      */
+    @Guard(Check.REJECT_RETURN_TYPE_CONVERSION)
     private static void rejectReturnTypeConversion(ResolvedMethodDeclaration resolvedTarget, Expression returnExpr,
                                                      String methodName) {
         ResolvedType declared;
@@ -2106,7 +2131,7 @@ public final class InlineMethodRefactor {
             // than surface that as an opaque internal-looking failure, say
             // plainly that this refactor can't verify the conversion here
             // and is refusing rather than guess.
-            throw new RefactorException("Cannot inline '" + methodName + "': could not determine its return "
+            throw new RefactorException(Check.REJECT_RETURN_TYPE_CONVERSION, "Cannot inline '" + methodName + "': could not determine its return "
                     + "expression's type for a conversion-safety check (" + e.getMessage() + ") -- this can happen "
                     + "for a switch expression, which this refactor's underlying resolver doesn't fully support. "
                     + "Refusing rather than guess whether an implicit conversion is involved.");
@@ -2114,7 +2139,7 @@ public final class InlineMethodRefactor {
         String declaredDescribe = declared.describe();
         String actualDescribe = actual.describe();
         if (!declaredDescribe.equals(actualDescribe) && !declaredDescribe.equals(stripWildcardBound(actualDescribe))) {
-            throw new RefactorException("Cannot inline '" + methodName + "': its declared return type ('"
+            throw new RefactorException(Check.REJECT_RETURN_TYPE_CONVERSION, "Cannot inline '" + methodName + "': its declared return type ('"
                     + declaredDescribe + "') differs from its return expression's own type ('" + actualDescribe
                     + "') -- inlining would substitute the expression's un-converted type instead of the implicit "
                     + "conversion Java applies at the return statement, which isn't supported in this version.");
@@ -2152,13 +2177,14 @@ public final class InlineMethodRefactor {
      * comparing, since that specific gap is a resolver-description quirk
      * for the SAME type, not an actual conversion.
      */
+    @Guard(Check.REJECT_PARAMETER_TYPE_CONVERSION)
     private static void rejectParameterTypeConversion(MethodCallExpr call, ResolvedMethodDeclaration resolvedTarget,
                                                         String methodName) {
         List<ResolvedType> declaredParamTypes;
         try {
             declaredParamTypes = resolvedTarget.formalParameterTypes();
         } catch (RuntimeException e) {
-            throw new RefactorException("Could not determine '" + methodName + "'s parameter types for a "
+            throw new RefactorException(Check.REJECT_PARAMETER_TYPE_CONVERSION, "Could not determine '" + methodName + "'s parameter types for a "
                     + "conversion-safety check: " + e.getMessage(), e);
         }
         for (int i = 0; i < declaredParamTypes.size() && i < call.getArguments().size(); i++) {
@@ -2167,14 +2193,14 @@ public final class InlineMethodRefactor {
             try {
                 actual = call.getArgument(i).calculateResolvedType();
             } catch (RuntimeException e) {
-                throw new RefactorException("Could not determine the type of the argument at position " + i
+                throw new RefactorException(Check.REJECT_PARAMETER_TYPE_CONVERSION, "Could not determine the type of the argument at position " + i
                         + " in call to '" + methodName + "' at " + call.getBegin().map(Object::toString).orElse("?")
                         + " for a conversion-safety check: " + e.getMessage(), e);
             }
             String declaredDescribe = declaredParamTypes.get(i).describe();
             String actualDescribe = actual.describe();
             if (!declaredDescribe.equals(actualDescribe) && !declaredDescribe.equals(stripWildcardBound(actualDescribe))) {
-                throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+                throw new RefactorException(Check.REJECT_PARAMETER_TYPE_CONVERSION, "Cannot inline call to '" + methodName + "' at "
                         + call.getBegin().map(Object::toString).orElse("?") + ": parameter " + i + " has declared "
                         + "type '" + declaredDescribe + "' but this call's argument has type '" + actualDescribe
                         + "' -- inlining would substitute the argument's un-converted type instead of the implicit "
@@ -2211,10 +2237,11 @@ public final class InlineMethodRefactor {
      * assignment, the same substitution can silently select a DIFFERENT
      * overload instead of failing loudly.
      */
+    @Guard(Check.REJECT_POLY_EXPRESSION_ARGUMENT)
     private static void rejectPolyExpressionArgument(Expression argument, int index, MethodCallExpr call,
                                                         String methodName) {
         if (argument instanceof LambdaExpr || argument instanceof MethodReferenceExpr) {
-            throw new RefactorException("Cannot inline call to '" + methodName + "' at "
+            throw new RefactorException(Check.REJECT_POLY_EXPRESSION_ARGUMENT, "Cannot inline call to '" + methodName + "' at "
                     + call.getBegin().map(Object::toString).orElse("?") + ": the argument at position " + index
                     + " ('" + argument + "') is a lambda or method reference, whose type comes from the CONTEXT it "
                     + "sits in rather than from the expression itself -- substituting it into the call's own "
@@ -2243,11 +2270,12 @@ public final class InlineMethodRefactor {
         return describe;
     }
 
+    @Guard(Check.REJECT_SELF_RECURSION)
     private static void rejectSelfRecursion(Expression returnExpr, String targetSignature) {
         for (MethodCallExpr call : returnExpr.findAll(MethodCallExpr.class)) {
             try {
                 if (call.resolve().getQualifiedSignature().equals(targetSignature)) {
-                    throw new RefactorException("Cannot inline this method: its own body calls itself ('" + call
+                    throw new RefactorException(Check.REJECT_SELF_RECURSION, "Cannot inline this method: its own body calls itself ('" + call
                             + "'), so it can't be textually substituted into its own call sites.");
                 }
             } catch (RefactorException e) {

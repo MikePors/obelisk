@@ -1,6 +1,7 @@
 package dev.obelisk.core.refactor;
 
 import dev.obelisk.core.testsupport.TestProject;
+import dev.obelisk.guard.Check;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -144,7 +145,7 @@ class OtherRefactorsTest {
                             public class TextFormatter { }
                             """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_DUPLICATE_TYPE_NAME, ctx ->
                     RenameClassRefactor.run(ctx, "Formatter", "TextFormatter", true)))
                     .hasMessageContaining("TextFormatter");
         }
@@ -191,7 +192,7 @@ class OtherRefactorsTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_DUPLICATE_FIELD_NAME, ctx ->
                     RenameFieldRefactor.run(ctx, "Config", "timeout", "timeoutMillis", true)))
                     .hasMessageContaining("timeoutMillis");
         }

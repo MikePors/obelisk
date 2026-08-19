@@ -1,5 +1,7 @@
 package dev.obelisk.core.refactor;
 
+import dev.obelisk.guard.Check;
+import dev.obelisk.guard.Guard;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.BodyDeclaration;
@@ -304,6 +306,7 @@ public final class RenameClassRefactor {
      * renaming onto an enclosing type parameter {@code T}, breaks the build
      * instead.
      */
+    @Guard(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE)
     private static void rejectNewNameAlreadyBoundAtReference(ProjectContext ctx, TypeDeclaration<?> targetClass,
                                                                String className, String newName,
                                                                List<ClassOrInterfaceType> typesToRename,
@@ -322,7 +325,7 @@ public final class RenameClassRefactor {
         sites.addAll(importsToRename);
         for (Node site : sites) {
             NameBindingChecker.typeBindingAt(ctx.typeSolver(), site, newName).ifPresent(bound -> {
-                throw new RefactorException("Cannot rename '" + className + "' to '" + newName + "': that name "
+                throw new RefactorException(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, "Cannot rename '" + className + "' to '" + newName + "': that name "
                         + "already means " + bound + " at a place that references '" + className + "' ("
                         + fileOf(ctx, site.findCompilationUnit().orElseThrow()) + "). Renaming would silently "
                         + "rebind that reference to the wrong type, or fail to compile. Not supported in this "
@@ -347,14 +350,16 @@ public final class RenameClassRefactor {
      * it prevents is DATA LOSS: the move uses {@code REPLACE_EXISTING}, so
      * without this an unrelated file is clobbered silently.
      */
+    @Guard(Check.REJECT_EXISTING_TARGET_FILE)
     private static void rejectExistingTargetFile(Path newFile, String className, String newName) {
-        throw new RefactorException("Cannot rename '" + className + "' to '" + newName + "': " + newFile
+        throw new RefactorException(Check.REJECT_EXISTING_TARGET_FILE, "Cannot rename '" + className + "' to '" + newName + "': " + newFile
                 + " already exists. Remove or rename it first.");
     }
 
+    @Guard(Check.REJECT_DUPLICATE_TYPE_NAME)
     private static void rejectDuplicateTypeName(ProjectContext ctx, TypeDeclaration<?> targetClass, String newName) {
         if (targetClass.getNameAsString().equals(newName)) {
-            throw new RefactorException("'" + newName + "' is already the name of '"
+            throw new RefactorException(Check.REJECT_DUPLICATE_TYPE_NAME, "'" + newName + "' is already the name of '"
                     + targetClass.getNameAsString() + "'");
         }
         List<TypeDeclaration<?>> siblings;
@@ -377,7 +382,7 @@ public final class RenameClassRefactor {
         }
         for (TypeDeclaration<?> sibling : siblings) {
             if (sibling != targetClass && sibling.getNameAsString().equals(newName)) {
-                throw new RefactorException("Cannot rename '" + targetClass.getNameAsString() + "' to '" + newName
+                throw new RefactorException(Check.REJECT_DUPLICATE_TYPE_NAME, "Cannot rename '" + targetClass.getNameAsString() + "' to '" + newName
                         + "': a sibling type named '" + newName + "' already exists.");
             }
         }

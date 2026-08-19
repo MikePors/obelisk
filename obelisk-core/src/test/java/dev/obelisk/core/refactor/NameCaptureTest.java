@@ -1,6 +1,7 @@
 package dev.obelisk.core.refactor;
 
 import dev.obelisk.core.testsupport.TestProject;
+import dev.obelisk.guard.Check;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -55,7 +56,7 @@ class NameCaptureTest {
                             """);
 
             // Before the fix this succeeded and sum() silently went 11 -> 20.
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND, ctx ->
                     RenameFieldRefactor.run(ctx, "Child", "total", "count", true)))
                     .hasMessageContaining("where this field is declared");
         }
@@ -80,7 +81,7 @@ class NameCaptureTest {
                             """);
 
             // Before the fix this succeeded and calc() silently went 107 -> 14.
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND, ctx ->
                     RenameFieldRefactor.run(ctx, "Calc", "total", "count", true)))
                     .hasMessageContaining("where this field is declared");
         }
@@ -101,7 +102,7 @@ class NameCaptureTest {
 
             // Before the fix this emitted `private int RED = 3;`, which
             // does not compile.
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_DUPLICATE_FIELD_NAME, ctx ->
                     RenameFieldRefactor.run(ctx, "Color", "shade", "RED", true)))
                     // Deliberately asserts on wording UNIQUE to the
                     // enum-constant check. Asserting on "enum constant" alone
@@ -164,7 +165,7 @@ class NameCaptureTest {
 
             // Before the fix this succeeded; go() silently returned
             // "bar(String)" instead of "foo(Object)".
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_VISIBLE, ctx ->
                     RenameMethodRefactor.run(ctx, "A", "foo", "bar", null, true)))
                     .hasMessageContaining("overload resolution picks the most specific");
         }
@@ -186,7 +187,7 @@ class NameCaptureTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_VISIBLE, ctx ->
                     RenameMethodRefactor.run(ctx, "Child", "hello", "greet", null, true)))
                     .hasMessageContaining("overload resolution picks the most specific");
         }
@@ -208,7 +209,7 @@ class NameCaptureTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_DECLARED_BY_SUBTYPE, ctx ->
                     RenameMethodRefactor.run(ctx, "Base", "hello", "greet", null, true)))
                     .hasMessageContaining("subtype");
         }
@@ -239,7 +240,7 @@ class NameCaptureTest {
             // An anonymous class body isn't a TypeDeclaration, so a
             // TypeDeclaration-based sweep missed it: go() silently went from
             // "Base.hello" to "anon.greet".
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_DECLARED_BY_SUBTYPE, ctx ->
                     RenameMethodRefactor.run(ctx, "Base", "hello", "greet", null, true)))
                     .hasMessageContaining("subtype");
         }
@@ -268,7 +269,7 @@ class NameCaptureTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_SHADOWING_COLLISION, ctx ->
                     RenameMethodRefactor.run(ctx, "Util", "log", "report", null, true)))
                     .hasMessageContaining("resolve that call against the enclosing class hierarchy first");
         }
@@ -327,7 +328,7 @@ class NameCaptureTest {
                             """);
 
             // Before the fix this succeeded and BOTH calls silently went to q.Widget.
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, ctx ->
                     RenameClassRefactor.run(ctx, "Gadget", "Widget", true)))
                     .hasMessageContaining("at a place that references");
         }
@@ -347,7 +348,7 @@ class NameCaptureTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, ctx ->
                     RenameClassRefactor.run(ctx, "Gadget", "T", true)))
                     .hasMessageContaining("at a place that references");
         }
@@ -381,7 +382,7 @@ class NameCaptureTest {
             // The import of Gadget is itself rewritten, producing
             // `import p.Widget; import q.Widget;` -- a duplicate single-type
             // import that javac rejects.
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, ctx ->
                     RenameClassRefactor.run(ctx, "Gadget", "Widget", true)))
                     .hasMessageContaining("at a place that references");
         }
@@ -433,7 +434,7 @@ class NameCaptureTest {
 
             Path file = dir.resolve("src/main/java/com/example/Main.java");
             // `compute(3)` on line 6.
-            assertThat(p.expectRefused(ctx ->
+            assertThat(p.expectRefused(Check.REJECT_NAME_COLLISION, ctx ->
                     ExtractVariableRefactor.run(ctx, file, 6, 17, 6, 26, "limit", true)))
                     .hasMessageContaining("shadow it for the rest of the enclosing block");
         }

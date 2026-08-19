@@ -1,6 +1,7 @@
 package dev.obelisk.core.refactor;
 
 import dev.obelisk.core.testsupport.TestProject;
+import dev.obelisk.guard.Check;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -50,7 +51,7 @@ class ExposedGuardsTest {
         Path collide = dir.resolve("src/main/java/com/example/TextFormatter.java");
         Files.writeString(collide, "package com.example;\nclass SomethingElse { }\n");
 
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_EXISTING_TARGET_FILE, ctx ->
                 RenameClassRefactor.run(ctx, "Formatter", "TextFormatter", true)))
                 .hasMessageContaining("Remove or rename it first");
 
@@ -72,7 +73,7 @@ class ExposedGuardsTest {
                     }
                 }
                 """);
-        assertThat(p.expectRefused(extract(p, "compute(3)", "c")))
+        assertThat(p.expectRefused(Check.REJECT_UNANCHORABLE_STATEMENT, extract(p, "compute(3)", "c")))
                 .hasMessageContaining("{ } block");
     }
 
@@ -89,7 +90,7 @@ class ExposedGuardsTest {
                     }
                 }
                 """);
-        assertThat(p.expectRefused(extract(p, "compute(3)", "c")))
+        assertThat(p.expectRefused(Check.REJECT_STATEMENT_NOT_AT_LINE_START, extract(p, "compute(3)", "c")))
                 .hasMessageContaining("first thing on its");
     }
 
@@ -109,7 +110,7 @@ class ExposedGuardsTest {
                             public static int go(int n) { return Util.twice(Util.twice(n)); }
                         }
                         """);
-        assertThat(p.expectRefused(ctx ->
+        assertThat(p.expectRefused(Check.REJECT_NESTED_SELF_CALL, ctx ->
                 InlineMethodRefactor.run(ctx, "Util", "twice", null, true)))
                 .hasMessageContaining("nested inside another");
     }

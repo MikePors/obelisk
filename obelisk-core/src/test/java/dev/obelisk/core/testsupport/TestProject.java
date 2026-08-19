@@ -3,6 +3,7 @@ package dev.obelisk.core.testsupport;
 import dev.obelisk.core.ProjectContext;
 import dev.obelisk.core.RefactorException;
 import dev.obelisk.core.refactor.RefactorResult;
+import dev.obelisk.guard.Check;
 
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
@@ -17,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -78,6 +80,26 @@ public final class TestProject {
      * or by repro, to silently produce wrong output or an unbuildable
      * project if allowed through.
      */
+    /**
+     * Runs {@code action} expecting the named {@link Check} to refuse it.
+     *
+     * <p>The Check is the contract; the message is presentation. Asserting
+     * the identity is what stops a test being satisfied by a DIFFERENT check
+     * whose message happens to share a phrase -- which happened three times
+     * here before identities existed. Callers still assert on the message
+     * too, so that a check with the right identity but a message describing
+     * some other hazard is also caught.
+     */
+    public RefactorException expectRefused(Check expected, RefactorAction action) {
+        RefactorException e = expectRefused(action);
+        assertThat(e.check())
+                .as("expected %s to refuse this, but the refusal came from %s: %s",
+                        expected, e.check().map(Enum::name).orElse("no check (an IO/resolver/validation failure)"),
+                        e.getMessage())
+                .contains(expected);
+        return e;
+    }
+
     public RefactorException expectRefused(RefactorAction action) {
         return assertThrows(RefactorException.class, () -> {
             try (ProjectContext ctx = ProjectContext.load(root)) {

@@ -644,7 +644,7 @@ class InlineMethodRefactorTest {
                             """);
 
             assertThat(p.expectRefused(inline("Util", "twice")))
-                    .hasMessageContaining("compile-time constant");
+                    .hasMessageContaining("every argument actually referenced by the method body");
         }
 
         @Test
@@ -665,7 +665,7 @@ class InlineMethodRefactorTest {
                             """);
 
             assertThat(p.expectRefused(inline("Util", "twice")))
-                    .hasMessageContaining("compile-time constant");
+                    .hasMessageContaining("every argument actually referenced by the method body");
         }
 
         @Test
@@ -687,7 +687,7 @@ class InlineMethodRefactorTest {
                             """);
 
             assertThat(p.expectRefused(inline("Util", "twice")))
-                    .hasMessageContaining("compile-time constant");
+                    .hasMessageContaining("every argument actually referenced by the method body");
         }
 
         @Test
@@ -709,7 +709,7 @@ class InlineMethodRefactorTest {
                             """);
 
             assertThat(p.expectRefused(inline("Util", "twice")))
-                    .hasMessageContaining("compile-time constant");
+                    .hasMessageContaining("every argument actually referenced by the method body");
         }
 
         @Test
@@ -730,7 +730,7 @@ class InlineMethodRefactorTest {
                             """);
 
             assertThat(p.expectRefused(inline("Util", "pick")))
-                    .hasMessageContaining("compile-time constant");
+                    .hasMessageContaining("every argument actually referenced by the method body");
         }
 
         @Test
@@ -1035,7 +1035,7 @@ class InlineMethodRefactorTest {
                             """);
 
             assertThat(p.expectRefused(inline("Util", "twice")))
-                    .hasMessageContaining("for-loop");
+                    .hasMessageContaining("initialization/update clause");
         }
 
         @Test
@@ -1174,7 +1174,7 @@ class InlineMethodRefactorTest {
                             """);
 
             assertThat(p.expectRefused(inline("Util", "twice")))
-                    .hasMessageContaining("method reference");
+                    .hasMessageContaining("can't be textually inlined");
         }
 
         @Test
@@ -1190,7 +1190,7 @@ class InlineMethodRefactorTest {
                             """);
 
             assertThat(p.expectRefused(inline("Util", "twice")))
-                    .hasMessageContaining("overloaded");
+                    .hasMessageContaining("Disambiguate with --params.");
         }
     }
 }

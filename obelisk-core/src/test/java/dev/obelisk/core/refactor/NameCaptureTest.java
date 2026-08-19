@@ -57,8 +57,7 @@ class NameCaptureTest {
             // Before the fix this succeeded and sum() silently went 11 -> 20.
             assertThat(p.expectRefused(ctx ->
                     RenameFieldRefactor.run(ctx, "Child", "total", "count", true)))
-                    .hasMessageContaining("already means")
-                    .hasMessageContaining("count");
+                    .hasMessageContaining("where this field is declared");
         }
 
         @Test
@@ -83,7 +82,7 @@ class NameCaptureTest {
             // Before the fix this succeeded and calc() silently went 107 -> 14.
             assertThat(p.expectRefused(ctx ->
                     RenameFieldRefactor.run(ctx, "Calc", "total", "count", true)))
-                    .hasMessageContaining("already means");
+                    .hasMessageContaining("where this field is declared");
         }
 
 
@@ -167,7 +166,7 @@ class NameCaptureTest {
             // "bar(String)" instead of "foo(Object)".
             assertThat(p.expectRefused(ctx ->
                     RenameMethodRefactor.run(ctx, "A", "foo", "bar", null, true)))
-                    .hasMessageContaining("already visible");
+                    .hasMessageContaining("overload resolution picks the most specific");
         }
 
         @Test
@@ -189,7 +188,7 @@ class NameCaptureTest {
 
             assertThat(p.expectRefused(ctx ->
                     RenameMethodRefactor.run(ctx, "Child", "hello", "greet", null, true)))
-                    .hasMessageContaining("already visible");
+                    .hasMessageContaining("overload resolution picks the most specific");
         }
 
         @Test
@@ -271,7 +270,7 @@ class NameCaptureTest {
 
             assertThat(p.expectRefused(ctx ->
                     RenameMethodRefactor.run(ctx, "Util", "log", "report", null, true)))
-                    .hasMessageContaining("already visible");
+                    .hasMessageContaining("resolve that call against the enclosing class hierarchy first");
         }
 
         @Test
@@ -330,7 +329,7 @@ class NameCaptureTest {
             // Before the fix this succeeded and BOTH calls silently went to q.Widget.
             assertThat(p.expectRefused(ctx ->
                     RenameClassRefactor.run(ctx, "Gadget", "Widget", true)))
-                    .hasMessageContaining("already means");
+                    .hasMessageContaining("at a place that references");
         }
 
         @Test
@@ -350,7 +349,7 @@ class NameCaptureTest {
 
             assertThat(p.expectRefused(ctx ->
                     RenameClassRefactor.run(ctx, "Gadget", "T", true)))
-                    .hasMessageContaining("already means");
+                    .hasMessageContaining("at a place that references");
         }
 
 
@@ -384,7 +383,7 @@ class NameCaptureTest {
             // import that javac rejects.
             assertThat(p.expectRefused(ctx ->
                     RenameClassRefactor.run(ctx, "Gadget", "Widget", true)))
-                    .hasMessageContaining("already means");
+                    .hasMessageContaining("at a place that references");
         }
 
         @Test
@@ -436,7 +435,7 @@ class NameCaptureTest {
             // `compute(3)` on line 6.
             assertThat(p.expectRefused(ctx ->
                     ExtractVariableRefactor.run(ctx, file, 6, 17, 6, 26, "limit", true)))
-                    .hasMessageContaining("already means");
+                    .hasMessageContaining("shadow it for the rest of the enclosing block");
         }
 
         @Test

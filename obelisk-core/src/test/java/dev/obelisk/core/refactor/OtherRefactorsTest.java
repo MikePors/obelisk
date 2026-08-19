@@ -74,7 +74,7 @@ class OtherRefactorsTest {
 
             assertThat(p.expectRefused(ctx ->
                     RenameMethodRefactor.run(ctx, "Greeter", "greet", "salute", null, true)))
-                    .hasMessageContaining("overloaded");
+                    .hasMessageContaining("Disambiguate with --params, e.g.");
         }
 
         @Test

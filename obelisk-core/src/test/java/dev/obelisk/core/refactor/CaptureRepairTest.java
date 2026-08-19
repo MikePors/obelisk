@@ -148,6 +148,6 @@ class CaptureRepairTest {
 
         assertThat(p.expectRefused(ctx ->
                 RenameFieldRefactor.run(ctx, "Base", "total", "count", true)))
-                .hasMessageContaining("hide");
+                .hasMessageContaining("would silently hide the renamed field");
     }
 }

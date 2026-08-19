@@ -52,7 +52,7 @@ class ExposedGuardsTest {
 
         assertThat(p.expectRefused(ctx ->
                 RenameClassRefactor.run(ctx, "Formatter", "TextFormatter", true)))
-                .hasMessageContaining("already exists");
+                .hasMessageContaining("Remove or rename it first");
 
         // And the bystander file is untouched.
         assertThat(Files.readString(collide)).contains("class SomethingElse");

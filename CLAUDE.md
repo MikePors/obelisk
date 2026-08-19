@@ -100,9 +100,15 @@ methods, initializers but not returns.
   measures *named methods* — a refusal written as an inline `throw` is
   invisible to it, and such refusals turned out to be systematically
   untested.
-- **Tests here pass for the wrong reason often.** Asserting on an error
-  message is not enough when another check produces similar wording; assert
-  on wording unique to the check under test. Mutation is what catches this.
+- **Tests here pass for the wrong reason often** — three times, each costing
+  a review round or a mutation run to notice. `MessageDistinctivenessTest`
+  now enforces the fix: every phrase a refusal test asserts must appear in
+  exactly ONE check's message. Assert on a clause from the half of the
+  message that explains WHY, not a two-word fragment of what.
+  A caveat worth keeping: ~68 of 92 refusal assertions still only pin down
+  the message's *subject* (a class or field name from the fixture) rather
+  than which check fired. Not wrong, but not identifying either — strengthen
+  them opportunistically when touching a test.
 - **`TestProject.rangeOf(file, snippet)`** locates expressions by text for
   extract-variable tests. Hand-counted columns have been wrong three times.
 - Fixtures deliberately write **no `pom.xml`** — that keeps them hermetic and

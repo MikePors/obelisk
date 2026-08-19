@@ -274,7 +274,7 @@ class ReviewRoundFixesTest {
                     }
                     """);
             assertThat(p.expectRefused(extract(p, "Collections.emptyList()", "empty")))
-                    .hasMessageContaining("inferred from the context");
+                    .hasMessageContaining("generic method call whose type");
         }
     }
 
@@ -394,7 +394,7 @@ class ReviewRoundFixesTest {
             // Output silently went from "Util.log:x" to "anon.report:x".
             assertThat(p.expectRefused(ctx ->
                     RenameMethodRefactor.run(ctx, "Util", "log", "report", null, true)))
-                    .hasMessageContaining("anonymous class");
+                    .hasMessageContaining("the anonymous class containing an unqualified call");
         }
 
         @Test

@@ -228,7 +228,7 @@ class ExtractVariableHoistingTest {
         // both sides -- so it's refused structurally, like the diamond.
         assertThat(p.expectRefused(ctx ->
                 ExtractVariableRefactor.run(ctx, mainFile(), 5, 26, 5, 58, "empty", true)))
-                .hasMessageContaining("inferred from the context");
+                .hasMessageContaining("generic method call whose type");
     }
 
     @Test

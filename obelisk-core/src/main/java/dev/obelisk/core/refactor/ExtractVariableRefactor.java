@@ -305,7 +305,9 @@ public final class ExtractVariableRefactor {
             if (assign.getOperator() == AssignExpr.Operator.ASSIGN) {
                 continue;
             }
-            if (isWithin(target, assign.getValue()) && isObservableFromElsewhere(assign.getTarget())) {
+            if (isWithin(target, assign.getValue())
+                    && (isObservableFromElsewhere(assign.getTarget())
+                            || rightHandSideWritesTarget(assign))) {
                 throw new RefactorException("Cannot extract this expression: it's inside the right-hand side of a "
                         + "compound assignment ('" + assign.getOperator().asString() + "') to something the "
                         + "expression could itself modify. A compound assignment READS its target before "
@@ -327,6 +329,36 @@ public final class ExtractVariableRefactor {
      * field, an array element, or anything reached through one is a
      * different matter, and stays refused.
      */
+    /**
+     * Can the compound assignment's own right-hand side WRITE the target?
+     *
+     * <p>The narrowing above reasons that a callee cannot reassign a
+     * caller's local -- true, but it answers the wrong question. The hazard
+     * is whether anything writes the target between the implicit read and
+     * the write, and the right-hand side is itself inside that window.
+     * Confirmed by repro, both compiling cleanly: {@code x += x++} went from
+     * 2 to 3 once {@code x++} was hoisted, and {@code x += (x = 10)} from 11
+     * to 20.
+     *
+     * <p>Matched by identifier rather than by resolved declaration: an
+     * over-match here only costs an extraction that a user can work around,
+     * whereas a miss is a silent wrong answer.
+     */
+    private static boolean rightHandSideWritesTarget(AssignExpr assign) {
+        String targetName = assign.getTarget().toString();
+        for (AssignExpr nested : assign.getValue().findAll(AssignExpr.class)) {
+            if (nested.getTarget().toString().equals(targetName)) {
+                return true;
+            }
+        }
+        for (UnaryExpr unary : assign.getValue().findAll(UnaryExpr.class)) {
+            if (isIncrementOrDecrement(unary) && unary.getExpression().toString().equals(targetName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static boolean isObservableFromElsewhere(Expression assignmentTarget) {
         if (assignmentTarget instanceof NameExpr name) {
             try {
@@ -434,6 +466,12 @@ public final class ExtractVariableRefactor {
                     + "call alone (typically as 'Object'), which generally won't compile in the original "
                     + "position.");
         }
+        if (returnsFromLambdaBody(target)) {
+            throw new RefactorException("Cannot extract this expression: it's the value of a 'return' inside a "
+                    + "lambda body, and the type expected there comes from the lambda's functional interface, "
+                    + "which isn't determinable here. A 'var' would capture the expression's own type instead, "
+                    + "which may not be compatible.");
+        }
         expectedTypeOf(target).ifPresent(expected -> {
             ResolvedType actual;
             try {
@@ -459,6 +497,34 @@ public final class ExtractVariableRefactor {
      * makes no claim there.
      */
     /**
+     * Is {@code target} the value of a {@code return} whose nearest
+     * enclosing callable is a LAMBDA rather than a method?
+     *
+     * <p>Refused rather than merely left unchecked. An earlier fix here made
+     * {@link #expectedTypeOf} answer "no claim" for this case, which
+     * corrected a wrong-reason over-refusal but left the real hazard open:
+     * the expected type comes from the lambda's functional interface, which
+     * this refactor cannot determine, so a {@code var} capturing the
+     * expression's own type can be incompatible. Confirmed by repro --
+     * extracting {@code 5} from {@code Supplier<Byte> s = () -> { return 5;
+     * }} produced a lambda body javac rejects.
+     */
+    private static boolean returnsFromLambdaBody(Expression target) {
+        if (!(target.getParentNode().orElse(null) instanceof com.github.javaparser.ast.stmt.ReturnStmt)) {
+            return false;
+        }
+        for (Node up = target; up != null; up = up.getParentNode().orElse(null)) {
+            if (up instanceof LambdaExpr) {
+                return true;
+            }
+            if (up instanceof CallableDeclaration) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Does {@code call}'s return type mention one of the method's OWN type
      * parameters? If so its type arguments are inferred, and in an
      * assignment context they are inferred from the TARGET type -- so
@@ -483,9 +549,20 @@ public final class ExtractVariableRefactor {
             if (resolved.getTypeParameters().isEmpty()) {
                 return false;
             }
-            Set<String> ownTypeParameters = new HashSet<>();
-            resolved.getTypeParameters().forEach(tp -> ownTypeParameters.add(tp.getName()));
-            return mentionsAny(resolved.getReturnType(), ownTypeParameters);
+            // Only the type parameters that CANNOT be pinned by an argument
+            // matter. `Collections.emptyList()` infers T purely from the
+            // target type, so `var` gets Object -- but
+            // `Objects.requireNonNull(raw)` and `Optional.of(s)` infer T from
+            // the argument, and `var` gets exactly the right type. An earlier
+            // version tested "return type mentions any own type parameter",
+            // which refused that entire (large, completely safe) population.
+            Set<String> unpinned = new HashSet<>();
+            resolved.getTypeParameters().forEach(tp -> unpinned.add(tp.getName()));
+            for (int i = 0; i < resolved.getNumberOfParams(); i++) {
+                ResolvedType paramType = resolved.getParam(i).getType();
+                unpinned.removeIf(n -> mentionsAny(paramType, Set.of(n)));
+            }
+            return mentionsAny(resolved.getReturnType(), unpinned);
         } catch (RuntimeException e) {
             return false;
         }
@@ -511,19 +588,23 @@ public final class ExtractVariableRefactor {
      * assignment, or a {@code return}. Empty elsewhere, which simply means
      * {@link #rejectTargetTypedInitializer} makes no claim there.
      *
-     * <p><b>An ARGUMENT position is deliberately not covered, and cannot
-     * usefully be.</b> Getting the parameter's declared type requires
-     * resolving the call -- but if the call RESOLVES, the resolver already
-     * found the method applicable to that argument type, so the conversion
-     * involved is a widening or boxing one and {@code isAssignableBy} will
-     * say yes; the check could never fire. And in the one case it would want
-     * to fire -- a constant narrowing like {@code takesByte(5)} -- JavaParser
-     * cannot resolve the call at all, because it doesn't model JLS 5.2's
-     * constant-expression narrowing during applicability. Confirmed by
-     * direct probe ({@code UnsolvedSymbolException} for {@code
-     * takesByte(5)}). So the branch would be dead code at best, and an
-     * over-refusal on boxing at worst. Extracting a constant out of an
-     * argument position that narrows it therefore remains a known gap.
+     * <p><b>An ARGUMENT position is deliberately not covered, because there
+     * is nothing there to catch.</b> If the call RESOLVES, the resolver
+     * already found the method applicable to that argument type, so the
+     * conversion in play is identity, widening or boxing -- all of which
+     * survive an intermediate {@code var} -- and {@code isAssignableBy}
+     * would say yes anyway. The branch could only ever have been dead code,
+     * or a false positive on boxing.
+     *
+     * <p>And the case it might look like it should catch does not exist:
+     * {@code takesByte(5)} is not legal Java in the first place. Method
+     * invocation conversion (JLS 5.3) deliberately EXCLUDES the constant
+     * narrowing that assignment conversion (JLS 5.2) permits, so javac
+     * rejects it with "possible lossy conversion from int to byte" before
+     * any refactoring is involved. An earlier version of this note claimed
+     * JavaParser was deficient here and that a narrowing-in-argument-
+     * position gap remained; both were wrong, and a phantom gap in the
+     * record invites someone to "close" it later.
      */
     private static Optional<ResolvedType> expectedTypeOf(Expression target) {
         Node parent = target.getParentNode().orElse(null);
@@ -543,9 +624,23 @@ public final class ExtractVariableRefactor {
             // `return 5;` in a byte-returning method applies the same
             // assignment conversion a `byte b = 5;` initializer does.
             if (parent instanceof com.github.javaparser.ast.stmt.ReturnStmt) {
-                var enclosing = target.findAncestor(CallableDeclaration.class).orElse(null);
-                if (enclosing instanceof com.github.javaparser.ast.body.MethodDeclaration method) {
-                    return Optional.of(method.getType().resolve());
+                // Walk up manually rather than findAncestor(CallableDeclaration):
+                // a LambdaExpr is NOT a CallableDeclaration, so findAncestor
+                // sails straight past a block-bodied lambda and answers with
+                // the ENCLOSING METHOD's return type. Confirmed by repro in
+                // both directions -- it let an int be extracted out of a
+                // Supplier<Byte> lambda (uncompilable), and refused a valid
+                // extraction citing an unrelated method's return type.
+                for (Node up = target; up != null; up = up.getParentNode().orElse(null)) {
+                    if (up instanceof LambdaExpr) {
+                        return Optional.empty();
+                    }
+                    if (up instanceof com.github.javaparser.ast.body.MethodDeclaration method) {
+                        return Optional.of(method.getType().resolve());
+                    }
+                    if (up instanceof CallableDeclaration) {
+                        return Optional.empty();
+                    }
                 }
                 return Optional.empty();
             }

@@ -15,6 +15,13 @@
 # A check reported as SURVIVED is either untested, or tested only by a test
 # that some other check also satisfies. Both are worth fixing.
 #
+# SCOPE, so that "0 survived" is not over-read: this measures only calls to
+# `reject*` methods. Refusals raised by an inline `throw new
+# RefactorException` -- there are several, e.g. ExtractVariableRefactor's
+# not-a-block-child and indentation guards, RenameClassRefactor's
+# target-file-exists guard, findMethod's overload ambiguity -- are NOT
+# measured by this tool at all.
+#
 # Some checks are subsumed by a broader one and can never be killed. Those
 # live in tools/mutation-allowlist.txt with a justification each; they are
 # reported as SUBSUMED and do not fail the run, so the exit code stays a
@@ -64,7 +71,7 @@ is_allowlisted() {  # $1=file  $2=call text
   grep -v '^[[:space:]]*#' "$ALLOWLIST" | grep -q "^${1}|${method}[[:space:]]*\(#.*\)\?$"
 }
 
-survived=0; killed=0; subsumed=0
+survived=0; killed=0; subsumed=0; unmeasurable=0
 for target in "${TARGETS[@]}"; do
   IFS='|' read -r file line call <<< "$target"
   restore "$file"
@@ -73,7 +80,12 @@ for target in "${TARGETS[@]}"; do
       "$SRC/$file" > "$WORK/mutated" && cp -f "$WORK/mutated" "$SRC/$file"
 
   if ! mvn -o -q clean compile >/dev/null 2>&1; then
-    printf '%-34s %-46s %s\n' "$file" "${call:0:44}" "SKIPPED (mutation did not compile)"
+    # An unmeasurable check is a GAP, not a pass. This used to `continue`
+    # without counting, so a call that could not be mutated (e.g. the body of
+    # an arrow lambda, where prefixing `if (false) ` is a syntax error)
+    # vanished from the tally entirely and the run still reported success.
+    printf '%-34s %-46s %s\n' "$file" "${call:0:44}" "*** UNMEASURABLE -- could not be mutated ***"
+    unmeasurable=$((unmeasurable + 1))
     restore "$file"; continue
   fi
   if mvn -o -q test >/dev/null 2>&1; then
@@ -92,7 +104,10 @@ for target in "${TARGETS[@]}"; do
 done
 
 echo
-echo "killed=$killed subsumed=$subsumed survived=$survived"
+total=$(( killed + subsumed + survived + unmeasurable ))
+echo "killed=$killed subsumed=$subsumed survived=$survived unmeasurable=$unmeasurable  (of $total targets)"
 [ "$survived" -eq 0 ] || echo "Each SURVIVED check needs a test that fails when only that check is disabled,
 or an entry in $ALLOWLIST explaining which broader check subsumes it."
-exit $(( survived > 0 ? 1 : 0 ))
+[ "$unmeasurable" -eq 0 ] || echo "An UNMEASURABLE check cannot be verified by this tool. Rewrite the call so a
+statement prefix is legal (e.g. give an arrow lambda a block body)."
+exit $(( (survived + unmeasurable) > 0 ? 1 : 0 ))

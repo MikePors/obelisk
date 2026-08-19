@@ -1,6 +1,8 @@
 package dev.obelisk.core.refactor;
 
 import com.github.javaparser.ast.Node;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.resolution.TypeSolver;
 import com.github.javaparser.resolution.declarations.ResolvedDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedEnumConstantDeclaration;
@@ -10,8 +12,11 @@ import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclar
 import com.github.javaparser.resolution.declarations.ResolvedTypeDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedTypeParameterDeclaration;
 import com.github.javaparser.resolution.model.SymbolReference;
+import com.github.javaparser.resolution.types.ResolvedReferenceType;
 import com.github.javaparser.symbolsolver.resolution.SymbolSolver;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -101,7 +106,7 @@ final class NameBindingChecker {
      * over-cautious in the direction this codebase always chooses, since an
      * over-refusal is a nuisance and an under-refusal is silent breakage.
      */
-    static Optional<String> visibleMethodOn(ResolvedReferenceTypeDeclaration type, String name) {
+    static Optional<String> visibleMethodOn(ResolvedReferenceTypeDeclaration type, Node astAnchor, String name) {
         // The declared-methods scan and the ancestor scan get their OWN try
         // blocks deliberately: sharing one means a failure while walking
         // ancestors (an unresolvable supertype, say) would also discard the
@@ -117,7 +122,7 @@ final class NameBindingChecker {
             // Fall through to the ancestor scan.
         }
         try {
-            for (var ancestor : type.getAllAncestors()) {
+            for (var ancestor : ancestorsOf(type, astAnchor)) {
                 var declaration = ancestor.getTypeDeclaration().orElse(null);
                 if (declaration == null) {
                     continue;
@@ -132,6 +137,59 @@ final class NameBindingChecker {
             return Optional.empty();
         }
         return Optional.empty();
+    }
+
+    /**
+     * {@link ResolvedReferenceTypeDeclaration#getAllAncestors()} with a
+     * fallback for LOCAL classes -- a class declared as a statement inside a
+     * method body -- for which this library returns an empty ancestor list
+     * even when the declaration has an explicit {@code extends}/{@code
+     * implements} clause naming a real supertype.
+     *
+     * <p>{@code RenameMethodRefactor.findOverrides} has documented and
+     * worked around this since long before the name-binding checks existed;
+     * those checks then went straight to {@code getAllAncestors()} and so
+     * reintroduced the gap. Confirmed by repro in BOTH directions: a LOCAL
+     * subclass declaring the new name was accepted as a rename target and
+     * silently changed which method a supertype-typed call dispatched to,
+     * while the anonymous and nested versions of the same fixture were
+     * correctly refused.
+     *
+     * <p>{@code astAnchor} is any node inside the type being asked about --
+     * it is only used to find the enclosing declaration when the fallback is
+     * needed.
+     */
+    static List<ResolvedReferenceType> ancestorsOf(ResolvedReferenceTypeDeclaration type, Node astAnchor) {
+        List<ResolvedReferenceType> ancestors;
+        try {
+            ancestors = type.getAllAncestors();
+        } catch (RuntimeException e) {
+            ancestors = List.of();
+        }
+        if (!ancestors.isEmpty() || astAnchor == null) {
+            return ancestors;
+        }
+        Optional<ClassOrInterfaceDeclaration> enclosing =
+                astAnchor instanceof ClassOrInterfaceDeclaration decl
+                        ? Optional.of(decl)
+                        : astAnchor.findAncestor(ClassOrInterfaceDeclaration.class);
+        if (enclosing.isEmpty()) {
+            return ancestors;
+        }
+        List<ClassOrInterfaceType> supertypeRefs = new ArrayList<>();
+        supertypeRefs.addAll(enclosing.get().getExtendedTypes());
+        supertypeRefs.addAll(enclosing.get().getImplementedTypes());
+        List<ResolvedReferenceType> manual = new ArrayList<>();
+        for (ClassOrInterfaceType ref : supertypeRefs) {
+            try {
+                ResolvedReferenceType resolved = ref.resolve().asReferenceType();
+                manual.add(resolved);
+                manual.addAll(resolved.getAllAncestors());
+            } catch (RuntimeException ignored) {
+                // Best effort -- an unresolvable supertype just isn't included.
+            }
+        }
+        return manual;
     }
 
     /** Human-readable description of what a name was found to bind to, for error messages. */

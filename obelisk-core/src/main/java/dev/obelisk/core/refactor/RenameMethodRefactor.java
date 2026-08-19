@@ -92,8 +92,9 @@ public final class RenameMethodRefactor {
 
         String paramsSuffix = targetSignature.substring(targetSignature.indexOf('('));
         for (MethodDeclaration member : familyDeclarations) {
-            member.findAncestor(TypeDeclaration.class).ifPresent(owner ->
-                    rejectDuplicateSignature(castTypeDeclaration(owner), newName, paramsSuffix, oldName));
+            member.findAncestor(TypeDeclaration.class).ifPresent(owner -> {
+                rejectDuplicateSignature(castTypeDeclaration(owner), newName, paramsSuffix, oldName);
+            });
         }
         rejectNewNameAlreadyVisible(familyDeclarations, oldName, newName);
         rejectNewNameDeclaredBySubtype(ctx, ownerQualifiedName, familySignatures, oldName, newName);
@@ -279,7 +280,7 @@ public final class RenameMethodRefactor {
         // walks ancestors; this one did not.
         ancestor.ifPresent(enclosing -> {
             try {
-                NameBindingChecker.visibleMethodOn(enclosing.resolve(), newName).ifPresent(bound -> {
+                NameBindingChecker.visibleMethodOn(enclosing.resolve(), enclosing, newName).ifPresent(bound -> {
                     throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': "
                             + bound + " is already visible on '" + enclosing.getNameAsString()
                             + "', which contains an unqualified call to '" + oldName + "' at "
@@ -359,7 +360,7 @@ public final class RenameMethodRefactor {
             }
             // Every family member is named oldName while this searches for
             // newName, so no family signature can match -- no exclusion needed.
-            NameBindingChecker.visibleMethodOn(owner, newName).ifPresent(bound -> {
+            NameBindingChecker.visibleMethodOn(owner, member, newName).ifPresent(bound -> {
                     throw new RefactorException("Cannot rename '" + oldName + "' to '" + newName + "': "
                             + bound + " is already visible on '" + owner.getQualifiedName() + "'. Renaming would "
                             + "either make a call site silently select that other method instead (overload "
@@ -404,7 +405,12 @@ public final class RenameMethodRefactor {
                         continue;
                     }
                     ResolvedReferenceTypeDeclaration declaringType = resolvedCandidate.declaringType();
-                    boolean isSubtype = declaringType.getAllAncestors().stream()
+                    // Via NameBindingChecker.ancestorsOf, not getAllAncestors():
+                    // the latter returns an empty list for a LOCAL class, so a
+                    // local subclass declaring the new name slipped through
+                    // (confirmed by repro) even after this scan was broadened
+                    // to reach anonymous and enum-constant bodies.
+                    boolean isSubtype = NameBindingChecker.ancestorsOf(declaringType, candidate).stream()
                             .anyMatch(a -> a.getQualifiedName().equals(ownerQualifiedName));
                     if (!isSubtype) {
                         continue;

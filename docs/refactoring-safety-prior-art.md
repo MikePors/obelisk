@@ -472,3 +472,87 @@ written against them, which is the argument for having them:
   directory but never restored sources. On a repo being committed to
   frequently that is a genuine hazard. The trap now restores on
   `EXIT INT TERM`.
+
+
+## 9. Reviewing the fixes-to-the-fixes
+
+A round scoped to §8's work found eight issues. Two are the same pattern
+recurring for the third time, and two are defects in the tooling built to
+catch defects.
+
+### 9.1 The pattern recurred, twice more
+
+- **Compound assignment.** The narrowing added in §8 reasoned that "a callee
+  cannot reassign a caller's local" -- true, and the wrong question. The
+  hazard is whether anything writes the target between the implicit read and
+  the write, and the right-hand side is itself inside that window.
+  `x += x++` extracted to `var v = x++; x += v;` and went from 2 to 3;
+  `x += (x = 10)` from 11 to 20. Both compiled clean. Fixed at the level of
+  the property: refuse if the RHS contains any write naming the target.
+- **Local classes.** §8 broadened the subtype SCAN from `TypeDeclaration` to
+  `MethodDeclaration`, catching anonymous and enum-constant bodies. But the
+  subtype TEST still called `getAllAncestors()` -- and `ancestorsOf`, twenty
+  lines below in the same file, exists precisely because that API returns an
+  empty list for a local class. A local subclass slipped through in both
+  directions. The workaround is now shared as
+  `NameBindingChecker.ancestorsOf`.
+
+### 9.2 A fix that was itself half-applied
+
+The `return`-position branch used `findAncestor(CallableDeclaration.class)`,
+which walks straight past a `LambdaExpr` and answers with the enclosing
+METHOD's return type -- producing both uncompilable output and refusals
+citing an unrelated method.
+
+The review suggested returning "no claim" for a lambda. Doing exactly that
+made the new test fail with *nothing thrown*: it fixes the wrong-reason
+over-refusal but leaves the real hazard open. A lambda's target type is not
+determinable here, so the honest answer is to refuse. Worth recording
+because the suggestion was right in direction and incomplete in substance --
+the same shape of error it was diagnosing.
+
+### 9.3 Over-refusal from a rule one clause too broad
+
+`returnTypeDependsOnInference` refused every generic call whose return type
+mentions a type parameter -- which includes `Objects.requireNonNull(raw)`
+and `Optional.of(s)`, where the parameter is pinned by the ARGUMENT and
+`var` infers exactly the right type. The correct discriminator is narrower:
+refuse only when a type parameter in the return type appears in NO formal
+parameter. The three documented repros (`Collections.emptyList()`,
+`Optional.empty()`, `List.of()`) are all zero-argument and stay refused.
+
+### 9.4 The tooling's own defects
+
+- **The allowlist suppressed a real gap.** rename-field's
+  `rejectShadowingCollision` was recorded as "covered by
+  `rejectNewNameAlreadyBound`". False: that check looks at the field's
+  DECLARATION site, while this one looks at the enclosing scopes of every
+  unqualified REFERENCE, where locals and parameters live. Disabling it
+  silently changed a fixture from 15 to 10. The entry is removed, the case
+  is now tested, and the file carries a warning that a wrong justification
+  converts a real signal into permanent silence.
+- **The script hid a check.** One `reject*` call sat in an arrow-lambda
+  body, where prefixing `if (false) ` is a syntax error. It was reported
+  `SKIPPED`, counted in no bucket, and did not affect the exit code -- so
+  `0 survived` and exit 0 were both wrong, with `38 + 5 = 43 != 44` the only
+  trace. Unmeasurable checks now count toward failure and are named in the
+  summary; the lambda was given a block body so it is measurable.
+- **Scope is now stated in the script header**: it measures only `reject*`
+  calls, so the several inline `throw new RefactorException` refusals are
+  not covered and "0 survived" must not be read as "every refusal is
+  pinned".
+
+### 9.5 A phantom gap, corrected
+
+§8.1 recorded that JavaParser "doesn't model JLS 5.2's constant-expression
+narrowing during applicability", and that narrowing in an argument position
+therefore remained a known gap. Both wrong. `takesByte(5)` is not legal Java
+at all -- method invocation conversion (JLS 5.3) deliberately excludes the
+constant narrowing that assignment conversion (5.2) permits, so javac
+rejects it before any refactoring is involved. JavaParser was behaving
+correctly. The removal of the argument branch was still right, for the other
+reason given (a resolvable call is already applicable, so the check could
+never fire), but a phantom gap in the record invites someone to close it.
+
+Final state: **121 tests, 39 killed / 5 subsumed / 0 survived / 0
+unmeasurable** across all 44 targets.

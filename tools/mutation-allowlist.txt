@@ -13,9 +13,19 @@
 #
 # Adding an entry here should always be a considered decision. A NEW survivor
 # that is not on this list fails the run -- that is the signal worth having.
+#
+# This file is itself a hazard: an entry added on a plausible-sounding but
+# WRONG justification converts a real signal into permanent silence. That has
+# already happened once. RenameFieldRefactor|rejectShadowingCollision was
+# listed here as "covered by rejectNewNameAlreadyBound", which was false --
+# that check looks at the field's DECLARATION site, while this one looks at
+# the enclosing scopes of every unqualified REFERENCE, where locals and
+# parameters live. Disabling it silently changed a fixture's output from 15 to
+# 10. Before adding an entry, disable the check and try to build a case that
+# reaches only it.
 
 InlineMethodRefactor.java|rejectSelfRecursion       # a self-call is a MethodCallExpr, banned by rejectMutatingOrCallExpressions
 InlineMethodRefactor.java|rejectParameterWrites     # an assignment / ++ is banned by rejectMutatingOrCallExpressions
-InlineMethodRefactor.java|rejectDeferredEvaluationConstructs  # a lambda-valued body always fails rejectReturnTypeConversion, whose resolver cannot type a lambda
+InlineMethodRefactor.java|rejectDeferredEvaluationConstructs  # lambda half: a lambda-valued body always fails rejectReturnTypeConversion, whose resolver cannot type a lambda. method-reference half: a bare `s::length` body is refused by rejectFreeReferences as a type reference
 RenameClassRefactor.java|rejectDuplicateTypeName    # a sibling type in the same package also resolves at the declaration site, so rejectNewNameAlreadyBoundAtReference catches it
-RenameFieldRefactor.java|rejectShadowingCollision   # rejectNewNameAlreadyBound checks the declaration site, which covers these cases
+RenameMethodRefactor.java|rejectDuplicateSignature  # requires name AND matching parameter list on the owner's declared methods; rejectNewNameAlreadyVisible refuses on the bare name alone, against the same owners, so this is a strict subset

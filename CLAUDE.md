@@ -94,6 +94,35 @@ methods, initializers but not returns.
 
 ---
 
+## Working method — bulk edits
+
+Three separate migrations here were reported as finished while incomplete
+(test-assertion migration, Check-ID migration, rename-method repair). The
+cause was the same each time: **treating a script's success message as
+evidence the work was done.** Scripts printed "updated 8 test files" while
+stale offsets put edits on the wrong tests, and "assigned 35 sites" while 15
+remained.
+
+The suite being green is not confirmation. Green proves nothing regressed;
+it says nothing about *completeness*, which is exactly what those failures
+were.
+
+1. **Compile after every scripted edit, before the next one.** Chaining two
+   bulk edits caused the worst instance: the first silently displaced an
+   annotation, the second hit a non-matching pattern and died before
+   writing, and the tree was left in a state neither intended and not
+   compiling. An `assert` firing mid-script does NOT mean nothing changed —
+   earlier scripts have already written.
+2. **Report completeness as a measured count, not a script's echo.** Grep
+   for what should be zero and show the number.
+3. **Prefer an invariant that makes the partial state fail the build.**
+   Removing `RefactorException(String)` worked because the compiler then
+   counted the unconverted sites instead of me. Do that where possible; it
+   turns "did I get them all?" from a judgement into a build error.
+4. **Drive bulk edits off ground truth, not a regex over source.** javac's
+   own error locations are reliable; a regex over method signatures silently
+   matched nothing and assigned zero sites.
+
 ## Verification habits
 
 - **Reproduce, don't reason.** Every finding worth acting on was confirmed by

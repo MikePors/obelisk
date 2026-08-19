@@ -895,7 +895,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "wrap")))
+            assertThat(p.expectRefused(Check.REJECT_POLY_EXPRESSION_ARGUMENT, inline("Util", "wrap")))
                     .hasMessageContaining("lambda or method reference");
         }
     }
@@ -1013,7 +1013,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_STATEMENT_POSITION, inline("Util", "twice")))
                     .hasMessageContaining("bare statement");
         }
 
@@ -1035,7 +1035,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_STATEMENT_POSITION, inline("Util", "twice")))
                     .hasMessageContaining("initialization/update clause");
         }
 
@@ -1060,7 +1060,7 @@ class InlineMethodRefactorTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(inline("Util", "twice")))
+            assertThat(p.expectRefused(Check.REJECT_STATEMENT_POSITION, inline("Util", "twice")))
                     .hasMessageContaining("sole) body of a lambda");
         }
     }

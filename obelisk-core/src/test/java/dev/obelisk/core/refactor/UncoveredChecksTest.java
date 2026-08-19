@@ -117,7 +117,7 @@ class UncoveredChecksTest {
                         }
                     }
                     """);
-            assertThat(p.expectRefused(extract(p, "com/example/Main.java", "data[1]", "slot")))
+            assertThat(p.expectRefused(Check.REJECT_LVALUE_POSITION, extract(p, "com/example/Main.java", "data[1]", "slot")))
                     .hasMessageContaining("left-hand side");
         }
 
@@ -133,7 +133,7 @@ class UncoveredChecksTest {
                         }
                     }
                     """);
-            assertThat(p.expectRefused(extract(p, "com/example/Main.java", "null", "n")))
+            assertThat(p.expectRefused(Check.REJECT_UNSUITABLE_INITIALIZER, extract(p, "com/example/Main.java", "null", "n")))
                     .hasMessageContaining("null");
         }
 
@@ -149,7 +149,7 @@ class UncoveredChecksTest {
                         }
                     }
                     """);
-            assertThat(p.expectRefused(extract(p, "com/example/Main.java", "Main.act()", "v")))
+            assertThat(p.expectRefused(Check.REJECT_NON_VALUE_EXPRESSION, extract(p, "com/example/Main.java", "Main.act()", "v")))
                     .isNotNull();
         }
     }

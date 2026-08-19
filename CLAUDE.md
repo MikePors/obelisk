@@ -112,6 +112,10 @@ methods, initializers but not returns.
   `MessageDistinctivenessTest` additionally forbids asserting a phrase that
   more than one check's message contains.
   Tests here passed for the wrong reason three times before this existed.
+  Current state: 85 of 91 refusal call sites assert an ID. The other 6 are
+  lookup/argument validation (missing class, ambiguous overload) which
+  legitimately carry no `Check` — if you add a refusal test and there is no
+  ID to assert, make sure that is the reason.
 - **`TestProject.rangeOf(file, snippet)`** locates expressions by text for
   extract-variable tests. Hand-counted columns have been wrong three times.
 - Fixtures deliberately write **no `pom.xml`** — that keeps them hermetic and

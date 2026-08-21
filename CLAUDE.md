@@ -19,7 +19,7 @@ research notes are in `docs/` §3 and §6. The payoff is *repair* — it replace
 a refusal with a working refactoring. Validation on its own is the half that
 was already there, and adding more of it does not make the tool more useful.
 
-**This has drifted to refusal-only twice.** Score: **2 repair methods, 48
+**This has drifted to refusal-only twice.** Score: **3 repair methods, 48
 `reject*` methods.** When in doubt, that ratio is the smell.
 
 ### The decision rule

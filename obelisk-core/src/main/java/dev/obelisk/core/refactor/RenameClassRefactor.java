@@ -12,6 +12,7 @@ import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.FieldAccessExpr;
+import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.expr.Name;
 import com.github.javaparser.ast.expr.SimpleName;
@@ -178,8 +179,20 @@ public final class RenameClassRefactor {
             }
         }
 
-        rejectNewNameAlreadyBoundAtReference(ctx, targetClass, className, newName, typesToRename,
-                annotationsToRename, staticQualifiersToRename, importsToRename);
+        // A declaration cannot be qualified, so this half stays a refusal.
+        rejectNewNameAlreadyBoundAtDeclaration(ctx, targetClass, className, newName);
+        // REPAIR: every REFERENCE the new simple name would rebind gets
+        // written fully-qualified instead.
+        String newQualifiedName = qualifiedSiblingName(targetQualifiedName, newName);
+        Map<Node, String> qualifiedReferences = planQualifiedTypeReferences(ctx, className, newName,
+                newQualifiedName, typesToRename, annotationsToRename, staticQualifiersToRename);
+        // An import of the target in such a file cannot simply be renamed --
+        // `import p.Widget;` next to an existing `import q.Widget;` is a
+        // duplicate single-type import, which javac rejects (confirmed by
+        // repro, recorded on the check this replaces). Its uses are now
+        // fully-qualified, so the import has nothing left to do: drop it.
+        Set<ImportDeclaration> importsToDrop = collidingImportsToDrop(ctx, importsToRename, newName);
+        importsToRename.removeAll(importsToDrop);
 
         Map<Path, String> originalContents = new LinkedHashMap<>();
         originalContents.computeIfAbsent(fileOf(ctx, targetClass.findCompilationUnit().orElseThrow()),
@@ -200,13 +213,37 @@ public final class RenameClassRefactor {
             originalContents.computeIfAbsent(fileOf(ctx, imp.findCompilationUnit().orElseThrow()),
                     RenameClassRefactor::readOriginal);
         }
+        for (ImportDeclaration imp : importsToDrop) {
+            originalContents.computeIfAbsent(fileOf(ctx, imp.findCompilationUnit().orElseThrow()),
+                    RenameClassRefactor::readOriginal);
+        }
+        for (Node site : qualifiedReferences.keySet()) {
+            originalContents.computeIfAbsent(fileOf(ctx, site.findCompilationUnit().orElseThrow()),
+                    RenameClassRefactor::readOriginal);
+        }
 
         // Apply every mutation together.
         targetClass.getName().setIdentifier(newName);
         for (Node ctor : constructorsToRename) {
             setConstructorName(ctor, newName);
         }
-        renameTypeReferences(typesToRename, newName);
+        Map<Node, String> qualifiedAsWritten = new IdentityHashMap<>();
+        renameTypeReferences(typesToRename, newName, qualifiedReferences, qualifiedAsWritten);
+        // ...then upgrade the sites that need the qualified form. Done after
+        // the plain rename rather than instead of it, so the shared
+        // multi-node declarator handling in renameTypeReferences still runs.
+        // Annotations and static qualifiers are not touched by
+        // renameTypeReferences, so they are qualified here.
+        for (Map.Entry<Node, String> entry : qualifiedReferences.entrySet()) {
+            if (entry.getKey() instanceof ClassOrInterfaceType) {
+                continue;
+            }
+            qualifiedAsWritten.put(writeQualifiedReference(entry.getKey(), entry.getValue()), entry.getValue());
+        }
+        verifyQualifiedTypeReferences(qualifiedReferences, qualifiedAsWritten, className, newName);
+        for (ImportDeclaration imp : importsToDrop) {
+            imp.remove();
+        }
         for (AnnotationExpr annotation : annotationsToRename) {
             // AnnotationExpr#setName(...) replaces the whole Name node, which
             // this JavaParser version's LexicalPreservingPrinter fails to
@@ -220,8 +257,6 @@ public final class RenameClassRefactor {
         for (SimpleName qualifier : staticQualifiersToRename) {
             qualifier.setIdentifier(newName);
         }
-        String newQualifiedName = targetQualifiedName.substring(0, targetQualifiedName.length() - className.length())
-                + newName;
         for (ImportDeclaration imp : importsToRename) {
             if (imp.isStatic() && !imp.isAsterisk()) {
                 String name = imp.getNameAsString();
@@ -285,52 +320,198 @@ public final class RenameClassRefactor {
         }
     }
 
+    /** {@code com.example.Gadget} + {@code Widget} -> {@code com.example.Widget}. */
+    private static String qualifiedSiblingName(String targetQualifiedName, String newName) {
+        int lastDot = targetQualifiedName.lastIndexOf('.');
+        return lastDot < 0 ? newName : targetQualifiedName.substring(0, lastDot + 1) + newName;
+    }
+
     /**
-     * Refuses when {@code newName} ALREADY names a type at some site that
-     * references the class being renamed.
+     * Imports of the target that cannot be renamed because the new simple
+     * name is already imported in that file. Renaming one would emit
+     * {@code import p.Widget; import q.Widget;} -- a duplicate single-type
+     * import javac rejects, confirmed by repro on the check this replaces.
      *
-     * <p>{@link #rejectDuplicateTypeName} only looks for a SIBLING
-     * declaration (same package, or same enclosing type). That misses every
-     * way a simple name can already be taken at a REFERENCE site, which is
-     * scope-sensitive and differs file by file: a single-type import, an
-     * enclosing type parameter, a {@code java.lang} type, or an on-demand
-     * import.
+     * <p>Dropping is safe whichever way the file uses the type. If it has
+     * references, they were just written fully-qualified for the same
+     * reason, so they no longer need the import; if it has none, the import
+     * was already dead. The condition is therefore about the IMPORT's own
+     * site, not about whether uses happened to be qualified -- an earlier
+     * version keyed on the latter and left a dead {@code import p.Gadget;}
+     * to be renamed into a duplicate.
+     */
+    private static Set<ImportDeclaration> collidingImportsToDrop(ProjectContext ctx,
+                                                                   Set<ImportDeclaration> importsToRename,
+                                                                   String newName) {
+        Set<ImportDeclaration> drop = new LinkedHashSet<>();
+        for (ImportDeclaration imp : importsToRename) {
+            if (imp.isStatic()) {
+                // A static import brings in a MEMBER, not the simple type
+                // name, so it cannot collide with another type of that name
+                // and must still be renamed.
+                continue;
+            }
+            if (wouldBindElsewhere(ctx, imp, newName)) {
+                drop.add(imp);
+            }
+        }
+        return drop;
+    }
+
+    /**
+     * Writes {@code site} as the fully-qualified {@code fqn}.
      *
-     * <p>Confirmed by repro, and silent: {@code p.Gadget} and {@code
-     * q.Widget} both exist, and {@code p.Client} imports {@code q.Widget}
-     * while calling both. Renaming {@code p.Gadget} to {@code Widget}
-     * succeeds -- there is no sibling {@code Widget} in {@code p} -- and the
-     * rewritten {@code Widget.tag()} now binds to {@code q.Widget}, because
-     * a single-type import outranks a same-package type. Both calls end up
-     * at the same class and the file still compiles. A second repro,
-     * renaming onto an enclosing type parameter {@code T}, breaks the build
-     * instead.
+     * <p>Built by parsing the qualified name rather than by hand-assembling
+     * a scope chain: this file already records that a hand-built chain and
+     * {@code LexicalPreservingPrinter} disagree, and parsing is what the
+     * printer expects to see.
+     */
+    private static Node writeQualifiedReference(Node site, String fqn) {
+        if (site instanceof ClassOrInterfaceType type) {
+            ClassOrInterfaceType parsed = com.github.javaparser.StaticJavaParser
+                    .parseClassOrInterfaceType(fqn);
+            type.setScope(parsed.getScope().orElse(null));
+            type.setName(parsed.getName());
+            return type;
+        }
+        if (site instanceof AnnotationExpr annotation) {
+            annotation.setName(fqn);
+            return annotation;
+        }
+        if (site instanceof NameExpr nameExpr) {
+            // A freshly CONSTRUCTED chain, not a clone: LexicalPreservingPrinter
+            // prints stale pre-mutation text for cloned nodes (documented at
+            // length on InlineMethodRefactor.planInline).
+            String[] parts = fqn.split("\\.");
+            Expression chain = new NameExpr(parts[0]);
+            for (int i = 1; i < parts.length; i++) {
+                chain = new FieldAccessExpr(chain, parts[i]);
+            }
+            nameExpr.replace(chain);
+            return chain;
+        }
+        throw new RefactorException(Check.INTERNAL_ERROR,
+                "don't know how to qualify a " + site.getClass().getSimpleName());
+    }
+
+    /**
+     * The reference sites where the new SIMPLE name would bind to a
+     * different type, mapped to the fully-qualified form that still names
+     * the renamed class.
+     *
+     * <p>The hazard is scope-sensitive and differs file by file: a
+     * single-type import outranks a same-package type, so renaming {@code
+     * p.Gadget} to {@code Widget} in a file that imports {@code q.Widget}
+     * leaves {@code Widget.tag()} silently pointing at {@code q.Widget},
+     * with a clean compile. Renaming onto an enclosing type parameter
+     * breaks the build instead.
+     *
+     * <p>Both are BINDING hazards, so per CLAUDE.md they are the repair
+     * case: write {@code p.Widget} at those sites instead of {@code Widget}.
+     * A fully-qualified type name is legal everywhere a simple one is, and
+     * it cannot be outranked by an import.
+     *
+     * <p>Only reference sites are repairable. A DECLARATION cannot be
+     * qualified -- {@code class p.Widget { }} is not Java -- so a new name
+     * that is already bound where the class is declared stays refused, by
+     * {@link #rejectNewNameAlreadyBoundAtDeclaration}.
+     */
+    private static Map<Node, String> planQualifiedTypeReferences(
+            ProjectContext ctx, String className, String newName, String newQualifiedName,
+            List<ClassOrInterfaceType> typesToRename, List<AnnotationExpr> annotationsToRename,
+            List<SimpleName> staticQualifiersToRename) {
+
+        Map<Node, String> qualified = new IdentityHashMap<>();
+        for (ClassOrInterfaceType type : typesToRename) {
+            if (wouldBindElsewhere(ctx, type, newName)) {
+                qualified.put(type, newQualifiedName);
+            }
+        }
+        for (AnnotationExpr annotation : annotationsToRename) {
+            if (wouldBindElsewhere(ctx, annotation, newName)) {
+                qualified.put(annotation, newQualifiedName);
+            }
+        }
+        for (SimpleName qualifier : staticQualifiersToRename) {
+            if (!wouldBindElsewhere(ctx, qualifier, newName)) {
+                continue;
+            }
+            // A static qualifier is an EXPRESSION scope (`Gadget.tag()`),
+            // not a type node, so the repair rebuilds the scope as a
+            // NameExpr/FieldAccessExpr chain rather than setting a scope on
+            // a type -- the same construction RenameMethodRefactor's
+            // qualifyShadowedCall uses, for the same reason.
+            //
+            // This case is not an afterthought: it is the ORIGINAL repro on
+            // the check being replaced (`Gadget.tag()` next to an imported
+            // q.Widget), so leaving it refused would have repaired
+            // everything except the thing that motivated the check.
+            Node scope = qualifier.getParentNode()
+                    .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR,
+                            "static qualifier '" + qualifier + "' has no parent expression"));
+            qualified.put(scope, newQualifiedName);
+        }
+        return qualified;
+    }
+
+    /** Does {@code newName} already name a DIFFERENT type at this site? */
+    private static boolean wouldBindElsewhere(ProjectContext ctx, Node site, String newName) {
+        return NameBindingChecker.typeBindingAt(ctx.typeSolver(), site, newName).isPresent();
+    }
+
+    /**
+     * Refuses when the new name is already bound where the class is
+     * DECLARED. Unlike a reference, a declaration has no qualified form to
+     * fall back on -- rule (a) in CLAUDE.md.
      */
     @Guard(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE)
-    private static void rejectNewNameAlreadyBoundAtReference(ProjectContext ctx, TypeDeclaration<?> targetClass,
-                                                               String className, String newName,
-                                                               List<ClassOrInterfaceType> typesToRename,
-                                                               List<AnnotationExpr> annotationsToRename,
-                                                               List<SimpleName> staticQualifiersToRename,
-                                                               Set<ImportDeclaration> importsToRename) {
-        List<Node> sites = new ArrayList<>();
-        sites.add(targetClass);
-        sites.addAll(typesToRename);
-        sites.addAll(annotationsToRename);
-        sites.addAll(staticQualifiersToRename);
-        // An IMPORT is a site that claims the simple name too, and this
-        // refactor rewrites it -- confirmed by repro that omitting it emitted
-        // `import p.Widget; import q.Widget;` in a file that imported both,
-        // which javac rejects as a duplicate single-type import.
-        sites.addAll(importsToRename);
-        for (Node site : sites) {
-            NameBindingChecker.typeBindingAt(ctx.typeSolver(), site, newName).ifPresent(bound -> {
-                throw new RefactorException(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, "Cannot rename '" + className + "' to '" + newName + "': that name "
-                        + "already means " + bound + " at a place that references '" + className + "' ("
-                        + fileOf(ctx, site.findCompilationUnit().orElseThrow()) + "). Renaming would silently "
-                        + "rebind that reference to the wrong type, or fail to compile. Not supported in this "
-                        + "version.");
-            });
+    private static void rejectNewNameAlreadyBoundAtDeclaration(ProjectContext ctx, TypeDeclaration<?> targetClass,
+                                                                 String className, String newName) {
+        NameBindingChecker.typeBindingAt(ctx.typeSolver(), targetClass, newName).ifPresent(bound -> {
+            throw new RefactorException(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, "Cannot rename '"
+                    + className + "' to '" + newName + "': that name already means " + bound
+                    + " where this type is DECLARED. A reference can be qualified to escape that; a declaration "
+                    + "cannot.");
+        });
+    }
+
+    /**
+     * Proves each repaired reference really was written fully-qualified.
+     *
+     * <p>Structural, not by resolution, and deliberately so: these sites are
+     * in OTHER files, and {@code JavaParserTypeSolver} reads source from
+     * disk, which still holds the pre-rename text -- so resolving them here
+     * would answer about the old code. Same limit, and the same honest
+     * scope, as {@code RenameMethodRefactor.verifyQualifiedCalls}.
+     */
+    @Guard(Check.VERIFY_QUALIFIED_TYPE_REFERENCES)
+    private static void verifyQualifiedTypeReferences(Map<Node, String> planned, Map<Node, String> qualified,
+                                                        String className, String newName) {
+        // Count first, against the PLAN. Checking only the nodes the repair
+        // reported writing means a site the repair silently skipped is
+        // invisible -- it is simply absent from the map, and every entry
+        // that IS there looks fine. Fault injection proved that: dropping
+        // one declarator-owned site left this check green while the emitted
+        // code was captured. A verifier that can only see what the repair
+        // chose to tell it is verifying its own input, the same flaw found
+        // in verifyQualifiedCalls.
+        if (qualified.size() != planned.size()) {
+            throw new RefactorException(Check.VERIFY_QUALIFIED_TYPE_REFERENCES, "Refusing to rename '" + className
+                    + "' to '" + newName + "': " + planned.size() + " reference(s) needed the qualified form to "
+                    + "keep naming this type, but only " + qualified.size() + " were written. Nothing has been "
+                    + "written to disk.");
+        }
+        for (Map.Entry<Node, String> entry : qualified.entrySet()) {
+            String written = entry.getKey() instanceof AnnotationExpr annotation
+                    ? annotation.getNameAsString()
+                    : entry.getKey().toString();
+            if (!written.equals(entry.getValue()) && !written.startsWith(entry.getValue() + "<")) {
+                throw new RefactorException(Check.VERIFY_QUALIFIED_TYPE_REFERENCES, "Refusing to rename '"
+                        + className + "' to '" + newName + "': the reference at "
+                        + entry.getKey().getBegin().map(Object::toString).orElse("?") + " had to be written as '"
+                        + entry.getValue() + "' to keep naming this type, but came out as '" + written
+                        + "'. Nothing has been written.");
+            }
         }
     }
 
@@ -523,7 +704,18 @@ public final class RenameClassRefactor {
      * top-level child replacement, which IS observed correctly) rather than
      * mutating a node buried inside it.
      */
-    private static void renameTypeReferences(List<ClassOrInterfaceType> typesToRename, String newName) {
+    /**
+     * @param qualified sites that must be written fully-qualified rather
+     *        than as the bare new name, mapped to that qualified name
+     * @param written receives the node that ACTUALLY ends up in the tree for
+     *        each qualified site -- which for a declarator-owned type is a
+     *        CLONE, not the node passed in. Qualifying afterwards wrote to
+     *        the detached original instead and left `T g = new
+     *        com.example.T();`: half-repaired, and verification would have
+     *        confirmed the half nobody could see.
+     */
+    private static void renameTypeReferences(List<ClassOrInterfaceType> typesToRename, String newName,
+                                               Map<Node, String> qualified, Map<Node, String> written) {
         Map<VariableDeclarator, List<ClassOrInterfaceType>> byDeclarator = new LinkedHashMap<>();
         List<ClassOrInterfaceType> direct = new ArrayList<>();
         for (ClassOrInterfaceType type : typesToRename) {
@@ -535,7 +727,12 @@ public final class RenameClassRefactor {
             }
         }
         for (ClassOrInterfaceType type : direct) {
-            type.setName(newName);
+            String fqn = qualified.get(type);
+            if (fqn != null) {
+                written.put(writeQualifiedReference(type, fqn), fqn);
+            } else {
+                type.setName(newName);
+            }
         }
         for (Map.Entry<VariableDeclarator, List<ClassOrInterfaceType>> entry : byDeclarator.entrySet()) {
             VariableDeclarator vd = entry.getKey();
@@ -547,7 +744,13 @@ public final class RenameClassRefactor {
             Type clonedType = vd.getType().clone();
             List<ClassOrInterfaceType> clonedNodes = clonedType.findAll(ClassOrInterfaceType.class);
             for (int i = 0; i < originalNodes.size(); i++) {
-                if (toRename.containsKey(originalNodes.get(i))) {
+                if (!toRename.containsKey(originalNodes.get(i))) {
+                    continue;
+                }
+                String fqn = qualified.get(originalNodes.get(i));
+                if (fqn != null) {
+                    written.put(writeQualifiedReference(clonedNodes.get(i), fqn), fqn);
+                } else {
                     clonedNodes.get(i).setName(newName);
                 }
             }

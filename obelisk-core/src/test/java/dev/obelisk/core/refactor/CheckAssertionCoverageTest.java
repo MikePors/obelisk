@@ -97,7 +97,7 @@ class CheckAssertionCoverageTest {
      * {@code tools/mutation-allowlist.txt} carries the same set with the
      * subsuming check named for each.
      *
-     * <p>Three of these are nonetheless VERIFIED, by
+     * <p>Four of these are nonetheless VERIFIED, by
      * {@code tools/repair-mutation-check.sh}: it breaks the repair each one
      * guards and requires the verifier to notice. That is how
      * {@code VERIFY_QUALIFIED_CALLS} was caught checking the qualifier it
@@ -121,7 +121,10 @@ class CheckAssertionCoverageTest {
             // Verified the same way, and it earned the entry: fault
             // injection caught it comparing declarations without checking
             // legality BEFORE it ever shipped.
-            "VERIFY_SHADOWED_REFERENCES");
+            "VERIFY_SHADOWED_REFERENCES",
+            // Cross-file, so structural rather than resolution-based -- see
+            // its Javadoc. Verified by fault injection all the same.
+            "VERIFY_QUALIFIED_TYPE_REFERENCES");
 
     private static final Map<String, Set<String>> EXEMPT = Map.of(
             "needs an external process or filesystem fault", ENVIRONMENT,

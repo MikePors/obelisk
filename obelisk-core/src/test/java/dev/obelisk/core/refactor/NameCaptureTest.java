@@ -375,8 +375,8 @@ class NameCaptureTest {
     class RenameClass {
 
         @Test
-        @DisplayName("renaming onto a name taken by a single-type import rebinds to the wrong class")
-        void refusesCaptureByImport() {
+        @DisplayName("a reference an import would capture is written fully-qualified")
+        void repairsCaptureByImport() {
             TestProject p = project()
                     .add("p/Gadget.java", """
                             package p;
@@ -398,15 +398,21 @@ class NameCaptureTest {
                             }
                             """);
 
-            // Before the fix this succeeded and BOTH calls silently went to q.Widget.
-            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, ctx ->
-                    RenameClassRefactor.run(ctx, "Gadget", "Widget", true)))
-                    .hasMessageContaining("at a place that references");
+            // Before the check existed this succeeded and BOTH calls silently
+            // went to q.Widget. It was then refused. It is now REPAIRED: the
+            // call that meant p.Gadget is written fully-qualified, so it
+            // keeps meaning p.Gadget, and the one that meant q.Widget is
+            // untouched.
+            p.run(ctx -> RenameClassRefactor.run(ctx, "Gadget", "Widget", true));
+
+            String after = p.source("p/Client.java");
+            assertThat(after).contains("p.Widget.tag() + \"/\" + Widget.tag()");
+            p.assertCompiles();
         }
 
         @Test
-        @DisplayName("renaming onto an enclosing TYPE PARAMETER breaks the build")
-        void refusesCaptureByTypeParameter() {
+        @DisplayName("a reference an enclosing type parameter would capture is qualified")
+        void repairsCaptureByTypeParameter() {
             TestProject p = project()
                     .add("com/example/Gadget.java", """
                             package com.example;
@@ -419,15 +425,50 @@ class NameCaptureTest {
                             }
                             """);
 
-            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, ctx ->
-                    RenameClassRefactor.run(ctx, "Gadget", "T", true)))
-                    .hasMessageContaining("at a place that references");
+            // This used to be refused as "breaks the build". It is
+            // repairable after all: the reference sits inside Box<T>, where
+            // the bare name T means the type parameter, so it is written
+            // com.example.T -- which names the renamed class and cannot be
+            // outranked. The DECLARATION is untouched and stays `class T`,
+            // which is legal; only a name bound at the declaration's OWN
+            // site is unrepairable.
+            p.run(ctx -> RenameClassRefactor.run(ctx, "Gadget", "T", true));
+
+            assertThat(p.source("com/example/Box.java"))
+                    .contains("com.example.T g = new com.example.T();");
+            p.assertCompiles();
         }
 
 
+        /**
+         * The declaration is the one site with no qualified form: {@code
+         * class com.example.Widget} is not Java. Rule (a) in CLAUDE.md, and
+         * the residue left behind once every REFERENCE became repairable.
+         */
         @Test
-        @DisplayName("an IMPORT of the new name in a referencing file collides after the rename")
-        void refusesCaptureByImportInAnotherFile() {
+        @DisplayName("a name already bound where the type is DECLARED cannot be qualified away")
+        void refusesNameBoundAtTheDeclarationItself() {
+            TestProject p = project()
+                    .add("q/Widget.java", """
+                            package q;
+                            public class Widget { }
+                            """)
+                    .add("p/Gadget.java", """
+                            package p;
+                            import q.Widget;
+                            public class Gadget {
+                                Widget w;
+                            }
+                            """);
+
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, ctx ->
+                    RenameClassRefactor.run(ctx, "Gadget", "Widget", true)))
+                    .hasMessageContaining("where this type is DECLARED");
+        }
+
+        @Test
+        @DisplayName("an import that would collide is dropped once its uses are qualified")
+        void dropsCollidingImport() {
             TestProject p = project()
                     .add("p/Gadget.java", """
                             package p;
@@ -450,12 +491,17 @@ class NameCaptureTest {
                             }
                             """);
 
-            // The import of Gadget is itself rewritten, producing
-            // `import p.Widget; import q.Widget;` -- a duplicate single-type
-            // import that javac rejects.
-            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND_AT_REFERENCE, ctx ->
-                    RenameClassRefactor.run(ctx, "Gadget", "Widget", true)))
-                    .hasMessageContaining("at a place that references");
+            // Renaming the import would produce `import p.Widget; import
+            // q.Widget;` -- a duplicate single-type import that javac
+            // rejects. Since this file's own uses of Gadget are now written
+            // fully-qualified, the import has nothing left to do and is
+            // dropped instead.
+            p.run(ctx -> RenameClassRefactor.run(ctx, "Gadget", "Widget", true));
+
+            String after = p.source("p/Unused.java");
+            assertThat(after).doesNotContain("import p.Widget;");
+            assertThat(after).contains("import q.Widget;");
+            p.assertCompiles();
         }
 
         @Test

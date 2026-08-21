@@ -75,6 +75,28 @@ final class NameBindingChecker {
     }
 
     /**
+     * The DECLARATION {@code name} binds to at {@code site}, rather than a
+     * description of it.
+     *
+     * <p>{@link #valueBindingAt} answers "is something already bound here",
+     * which is all a refusal needs. A REPAIR needs the declaration itself:
+     * whether it is static decides between {@code super.x} and
+     * {@code Type.x}, and which type declares it decides what the qualifier
+     * has to name. Same solver call, same "not solved means nothing binds"
+     * polarity -- only the return type differs.
+     */
+    static Optional<ResolvedDeclaration> valueDeclarationAt(TypeSolver typeSolver, Node site, String name) {
+        try {
+            SymbolReference<?> reference = new SymbolSolver(typeSolver).solveSymbol(name, site);
+            return reference.isSolved()
+                    ? Optional.of(reference.getCorrespondingDeclaration())
+                    : Optional.empty();
+        } catch (RuntimeException e) {
+            return Optional.empty();
+        }
+    }
+
+    /**
      * What TYPE (a sibling type, an imported one, a same-package one, a
      * {@code java.lang} one, or an enclosing TYPE PARAMETER) does {@code
      * name} already bind to at {@code site}? Empty if nothing does.
@@ -193,6 +215,11 @@ final class NameBindingChecker {
     }
 
     /** Human-readable description of what a name was found to bind to, for error messages. */
+    /** {@link #describe} for callers holding a declaration already. */
+    static String describeOf(ResolvedDeclaration declaration) {
+        return describe(declaration);
+    }
+
     private static String describe(ResolvedDeclaration declaration) {
         if (declaration instanceof ResolvedFieldDeclaration field) {
             String owner;

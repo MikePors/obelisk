@@ -20,6 +20,7 @@ import com.github.javaparser.ast.expr.NameExpr;
 import com.github.javaparser.ast.expr.TypePatternExpr;
 import com.github.javaparser.printer.lexicalpreservation.LexicalPreservingPrinter;
 import com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
 import com.github.javaparser.resolution.model.SymbolReference;
@@ -81,7 +82,11 @@ public final class RenameFieldRefactor {
         String ownerQualifiedName = resolvedField.declaringType().getQualifiedName();
 
         rejectDuplicateFieldName(targetClass, targetField, newName, oldName);
-        rejectNewNameAlreadyBound(ctx, targetField, oldName, newName);
+        // REPAIR, not refusal: if the new name already means something else
+        // here, the references that mean it get qualified so they keep
+        // reaching it, rather than the whole rename being refused.
+        Map<NameExpr, Expression> shadowedReferenceRepairs =
+                planShadowedReferenceRepairs(ctx, targetClass, targetField, ownerQualifiedName, oldName, newName);
 
         // Resolve every matching reference against the ORIGINAL (unmodified)
         // AST first, and defer every mutation to a single batch applied
@@ -156,8 +161,24 @@ public final class RenameFieldRefactor {
                     RenameFieldRefactor::readOriginal);
         }
 
+        // What each shadowed reference means BEFORE anything is mutated --
+        // captured here because after the rename the bare name would resolve
+        // to the renamed field, which is precisely the rebinding being
+        // guarded against.
+        Map<Expression, String> shadowedExpectations = new LinkedHashMap<>();
+        for (Map.Entry<NameExpr, Expression> entry : shadowedReferenceRepairs.entrySet()) {
+            ResolvedFieldDeclaration meant = (ResolvedFieldDeclaration) entry.getKey().resolve();
+            shadowedExpectations.put(entry.getValue(),
+                    meant.declaringType().getQualifiedName() + "." + meant.getName());
+            originalContents.computeIfAbsent(fileOf(ctx, entry.getKey().findCompilationUnit().orElseThrow()),
+                    RenameFieldRefactor::readOriginal);
+        }
+
         // Apply every mutation together.
         targetField.getName().setIdentifier(newName);
+        for (Map.Entry<NameExpr, Expression> entry : shadowedReferenceRepairs.entrySet()) {
+            entry.getKey().replace(entry.getValue());
+        }
         List<Expression> repairedReferences = new ArrayList<>();
         for (NameExpr name : unqualifiedToRename) {
             if (referencesNeedingQualification.contains(name)) {
@@ -176,6 +197,7 @@ public final class RenameFieldRefactor {
         }
         verifyRepairedReferences(repairedReferences, ownerQualifiedName, newName, oldName,
                 resolvedField.isStatic());
+        verifyShadowedReferences(shadowedExpectations, oldName, newName);
 
         List<Path> changedFiles = new ArrayList<>();
         Map<Path, String> diffs = new LinkedHashMap<>();
@@ -286,34 +308,248 @@ public final class RenameFieldRefactor {
     }
 
     /**
-     * Refuses when {@code newName} ALREADY binds to something at the field's
-     * own declaration site -- an inherited field, a static-imported field,
-     * or an enum constant.
+     * The references that a name-shadowing rename would silently rebind,
+     * paired with the qualified form that keeps each one reaching what it
+     * means today.
      *
-     * <p>{@link #rejectDuplicateFieldName} only inspects the target class's
-     * own declared members, which misses both of those. The reference this
-     * breaks is not a reference to the field being renamed, so no check that
-     * walks the target's own use sites can see it either: giving the field
-     * the new name makes it HIDE whatever the name already meant, silently
-     * rebinding every unqualified use of that name in the class.
+     * <p>The hazard, confirmed by repro: {@code class Base { protected int
+     * count = 1; }} and {@code class Child extends Base { private int total
+     * = 10; int sum() { return count + this.total; } }}. Renaming {@code
+     * total} to {@code count} compiles cleanly and {@code sum()} silently
+     * changes from 11 to 20, because the bare {@code count} -- which meant
+     * {@code Base.count} -- now resolves to the renamed field.
      *
-     * <p>Confirmed by repro: {@code class Base { protected int count = 1; }}
-     * and {@code class Child extends Base { private int total = 10; int
-     * sum() { return count + this.total; } }}. Renaming {@code total} to
-     * {@code count} compiles cleanly, and {@code sum()} silently changes
-     * from 11 to 20 because the bare {@code count} -- which used to mean
-     * {@code Base.count} -- now resolves to the renamed field. The same
-     * happens when the shadowed binding is a static import.
+     * <p>This used to be refused outright. It is a BINDING hazard, so per
+     * CLAUDE.md's decision rule it is the repair case: the reference can be
+     * made explicit, and the repair verified. Note the direction, which is
+     * the opposite of {@link #qualifyCapturedReference}: there, references
+     * TO THE RENAMED FIELD were being captured by a local, and the renamed
+     * field's own references get qualified. Here the renamed field is the
+     * CAPTOR, and it is the OTHER declaration's references that must be
+     * qualified to escape it.
+     *
+     * <p>Only the target class's own body is searched. The field being
+     * renamed can only shadow the name inside its own scope, and confining
+     * the rewrite there also keeps every repaired reference in the same
+     * compilation unit as the mutation -- so {@link
+     * #verifyShadowedReferences} can prove them by resolution rather than
+     * structurally. A {@code protected} or package-private field can be
+     * inherited by a subclass in ANOTHER file, where the same shadowing
+     * would apply; that case is still refused, because the repair could not
+     * be verified there (see CLAUDE.md on JavaParserTypeSolver reading from
+     * disk).
+     */
+    private static Map<NameExpr, Expression> planShadowedReferenceRepairs(
+            ProjectContext ctx, TypeDeclaration<?> targetClass, VariableDeclarator targetField,
+            String ownerQualifiedName, String oldName, String newName) {
+
+        Optional<ResolvedDeclaration> shadowed =
+                NameBindingChecker.valueDeclarationAt(ctx.typeSolver(), targetField, newName);
+        if (shadowed.isEmpty()) {
+            return Map.of();
+        }
+        ResolvedDeclaration bound = shadowed.get();
+
+        // What can be qualified, and what cannot. The caveats here are the
+        // ones CLAUDE.md records: `super.x` does not work for a static nor
+        // through an interface, and an inner class needs `Outer.this`.
+        rejectShadowedBindingThatIsNotAField(bound, oldName, newName);
+        ResolvedFieldDeclaration shadowedField = (ResolvedFieldDeclaration) bound;
+
+        String shadowedOwner = shadowedField.declaringType().getQualifiedName();
+        if (shadowedOwner.equals(ownerQualifiedName)) {
+            // Same type declares both: that is a duplicate field, and
+            // rejectDuplicateFieldName gives the better message.
+            return Map.of();
+        }
+
+        Map<NameExpr, Expression> repairs = new java.util.LinkedHashMap<>();
+        for (NameExpr candidate : targetClass.findAll(NameExpr.class)) {
+            if (!candidate.getNameAsString().equals(newName)) {
+                continue;
+            }
+            ResolvedValueDeclaration boundHere;
+            try {
+                boundHere = candidate.resolve();
+            } catch (RuntimeException e) {
+                // Its own identity, not the refusal's: this is the solver
+                // failing, the same category as resolveTarget's
+                // TARGET_FIELD_UNRESOLVABLE, and one Check per distinct
+                // failure is what CheckIdIntegrityTest enforces.
+                throw new RefactorException(Check.SHADOWED_REFERENCE_UNRESOLVABLE, "Cannot rename field '" + oldName
+                        + "' to '" + newName + "': an existing '" + newName + "' reference at "
+                        + candidate.getBegin().map(Object::toString).orElse("?") + " could not be resolved ("
+                        + e.getMessage() + "), so whether the rename would rebind it cannot be established.");
+            }
+            if (!(boundHere instanceof ResolvedFieldDeclaration f)
+                    || !f.declaringType().getQualifiedName().equals(shadowedOwner)
+                    || !f.getName().equals(newName)) {
+                continue;
+            }
+            repairs.put(candidate, qualifierForShadowed(shadowedField, newName, candidate, oldName));
+        }
+        return repairs;
+    }
+
+    /**
+     * The explicit form of a reference that the renamed field is about to
+     * capture. {@code Owner.x} for a static, {@code super.x} for an
+     * inherited instance field.
+     *
+     * <p>Refuses rather than guessing where neither works: {@code super}
+     * reaches a superCLASS field, and an interface's fields are implicitly
+     * static (JLS 9.3) so they take the type-name form; a field inherited
+     * from an enclosing type instead would need {@code Outer.this.x}, which
+     * is a different shape and is not attempted here.
+     */
+    private static Expression qualifierForShadowed(ResolvedFieldDeclaration shadowedField, String newName,
+                                                     NameExpr site, String oldName) {
+        if (shadowedField.isStatic()) {
+            // The declaring type's SIMPLE name: the reference resolves today
+            // without any qualifier, so that type is necessarily already in
+            // scope here -- the same reasoning qualifyCapturedReference uses,
+            // and the reason a hand-built package-qualified chain is wrong.
+            return new FieldAccessExpr(
+                    new NameExpr(shadowedField.declaringType().getName()), newName);
+        }
+        rejectShadowedInstanceBindingNotInherited(shadowedField, site, newName, oldName);
+        return new FieldAccessExpr(new com.github.javaparser.ast.expr.SuperExpr(), newName);
+    }
+
+    /**
+     * Refuses when the name the rename would shadow means something that is
+     * not a field, so no qualified form could keep reaching it.
+     *
+     * <p>An enum constant is NOT a {@code ResolvedFieldDeclaration} (it is a
+     * {@code ResolvedEnumConstantDeclaration}) -- one of the JavaParser
+     * divergences in CLAUDE.md, and the reason this tests the RESOLVED
+     * declaration rather than the node kind.
+     *
+     * <p>A named method rather than an inline {@code throw} deliberately:
+     * {@code tools/mutation-check.sh} only measures calls to named
+     * {@code reject*}/{@code verify*} methods, and CLAUDE.md records that
+     * refusals written inline "turned out to be systematically untested"
+     * because nothing reports their absence.
      */
     @Guard(Check.REJECT_NEW_NAME_ALREADY_BOUND)
-    private static void rejectNewNameAlreadyBound(ProjectContext ctx, VariableDeclarator targetField,
-                                                    String oldName, String newName) {
-        NameBindingChecker.valueBindingAt(ctx.typeSolver(), targetField, newName).ifPresent(bound -> {
-            throw new RefactorException(Check.REJECT_NEW_NAME_ALREADY_BOUND, "Cannot rename field '" + oldName + "' to '" + newName + "': that name "
-                    + "already means " + bound + " where this field is declared. Renaming would make the field "
-                    + "hide it, silently changing what every unqualified '" + newName + "' in this class refers to. "
-                    + "Not supported in this version.");
-        });
+    private static void rejectShadowedBindingThatIsNotAField(ResolvedDeclaration bound, String oldName,
+                                                               String newName) {
+        if (!(bound instanceof ResolvedFieldDeclaration)) {
+            throw new RefactorException(Check.REJECT_NEW_NAME_ALREADY_BOUND, "Cannot rename field '" + oldName
+                    + "' to '" + newName + "': that name already means " + NameBindingChecker.describeOf(bound)
+                    + " where this field is declared, and that is not a field, so there is no qualified form "
+                    + "that would keep reaching it.");
+        }
+    }
+
+    /**
+     * Refuses an instance binding that {@code super.x} cannot reach --
+     * typically a field of an ENCLOSING type, which needs
+     * {@code Outer.this.x}. Synthesising that form is a different shape and
+     * is not attempted here, so this is rule (b) in CLAUDE.md: the fact the
+     * repair would need is not one it knows how to name.
+     */
+    @Guard(Check.REJECT_SHADOWED_BINDING_NOT_QUALIFIABLE)
+    private static void rejectShadowedInstanceBindingNotInherited(ResolvedFieldDeclaration shadowedField,
+                                                                    NameExpr site, String newName,
+                                                                    String oldName) {
+        if (!isInheritedFromSuperclass(shadowedField, site)) {
+            throw new RefactorException(Check.REJECT_SHADOWED_BINDING_NOT_QUALIFIABLE, "Cannot rename field '"
+                    + oldName + "' to '" + newName + "': that name means the instance field '"
+                    + shadowedField.declaringType().getQualifiedName() + "." + newName + "' here, which is not "
+                    + "inherited from a superclass, so neither 'super." + newName + "' nor a type-qualified "
+                    + "form would keep reaching it.");
+        }
+    }
+
+    /**
+     * Is {@code field} reached at {@code site} by ordinary superCLASS
+     * inheritance -- the one case {@code super.x} handles?
+     *
+     * <p>Uses {@code NameBindingChecker.ancestorsOf} rather than
+     * {@code getAllAncestors()}, which returns EMPTY for a local class
+     * (CLAUDE.md).
+     */
+    private static boolean isInheritedFromSuperclass(ResolvedFieldDeclaration field, NameExpr site) {
+        TypeDeclaration<?> enclosing = site.findAncestor(TypeDeclaration.class).orElse(null);
+        if (enclosing == null) {
+            return false;
+        }
+        try {
+            var resolvedEnclosing = enclosing.resolve();
+            String wanted = field.declaringType().getQualifiedName();
+            for (var ancestor : NameBindingChecker.ancestorsOf(resolvedEnclosing, enclosing)) {
+                var decl = ancestor.getTypeDeclaration();
+                if (decl.isPresent() && decl.get().getQualifiedName().equals(wanted)) {
+                    // An interface's fields are implicitly static (JLS 9.3),
+                    // so they never reach this branch -- but a mis-declared
+                    // model could, and `super.x` through an interface does
+                    // not compile. Excluding it here is cheaper than
+                    // discovering it in verification.
+                    return !decl.get().isInterface();
+                }
+            }
+        } catch (RuntimeException e) {
+            return false;
+        }
+        return false;
+    }
+
+    /**
+     * Proves each reference the rename would have captured still reaches the
+     * declaration it named BEFORE the rename.
+     *
+     * <p>The other half of the pair, and the reason this repair is safe to
+     * make at all rather than a hopeful rewrite. It runs after the field has
+     * been renamed in memory, which is exactly the state where a missed
+     * repair would bind to the new field instead -- so a silent regression
+     * in {@link #qualifierForShadowed} fails here rather than on the user's
+     * disk.
+     */
+    @Guard(Check.VERIFY_SHADOWED_REFERENCES)
+    private static void verifyShadowedReferences(Map<Expression, String> repaired, String oldName, String newName) {
+        for (Map.Entry<Expression, String> entry : repaired.entrySet()) {
+            Expression reference = entry.getKey();
+            String expected = entry.getValue();
+            String actual;
+            try {
+                ResolvedValueDeclaration resolved = ((FieldAccessExpr) reference).resolve();
+                if (!(resolved instanceof ResolvedFieldDeclaration f)) {
+                    throw new RefactorException(Check.VERIFY_SHADOWED_REFERENCES, "Refusing to rename '" + oldName
+                            + "' to '" + newName + "': the escaped reference '" + reference
+                            + "' no longer resolves to a field. Nothing has been written.");
+                }
+                actual = f.declaringType().getQualifiedName() + "." + f.getName();
+                // Binding identity is not legality. `Base.count` for an
+                // INHERITED INSTANCE field resolves to exactly the right
+                // declaration and javac still rejects it, so comparing
+                // declarations alone passes code that will not compile --
+                // the same blind spot fault injection found in
+                // verifyRepairedReferences, and found here too, by
+                // tools/repair-mutations.txt, before this verifier had ever
+                // shipped.
+                boolean viaSuper = ((FieldAccessExpr) reference).getScope()
+                        instanceof com.github.javaparser.ast.expr.SuperExpr;
+                if (f.isStatic() == viaSuper) {
+                    throw new RefactorException(Check.VERIFY_SHADOWED_REFERENCES, "Refusing to rename '" + oldName
+                            + "' to '" + newName + "': the escaped reference '" + reference + "' reaches "
+                            + (f.isStatic() ? "a static field through 'super'" : "an instance field through a "
+                            + "type name") + ", which is not a legal way to name it. Nothing has been written.");
+                }
+            } catch (RefactorException e) {
+                throw e;
+            } catch (RuntimeException e) {
+                throw new RefactorException(Check.VERIFY_SHADOWED_REFERENCES, "Refusing to rename '" + oldName
+                        + "' to '" + newName + "': the escaped reference '" + reference + "' could not be "
+                        + "resolved after the rename (" + e.getMessage() + "). Nothing has been written.", e);
+            }
+            if (!actual.equals(expected)) {
+                throw new RefactorException(Check.VERIFY_SHADOWED_REFERENCES, "Refusing to rename '" + oldName
+                        + "' to '" + newName + "': the reference '" + reference + "' meant '" + expected
+                        + "' before the rename and reaches '" + actual + "' after it -- the rename would have "
+                        + "silently rebound it. Nothing has been written.");
+            }
+        }
     }
 
     /**

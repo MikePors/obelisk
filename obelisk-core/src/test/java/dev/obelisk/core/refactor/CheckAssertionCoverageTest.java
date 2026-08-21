@@ -77,6 +77,9 @@ class CheckAssertionCoverageTest {
             "CALL_UNRESOLVABLE",
             "CALL_TYPE_UNRESOLVABLE",
             "METHOD_REFERENCE_UNRESOLVABLE",
+            // Fires when a pre-existing reference to the NEW name cannot be
+            // resolved, so whether the rename would rebind it is unknowable.
+            "SHADOWED_REFERENCE_UNRESOLVABLE",
             // Its own two throw sites are both resolver failures: the target
             // class not resolving, and an ancestor with no type declaration.
             // The hazard it exists for is refused by
@@ -94,7 +97,7 @@ class CheckAssertionCoverageTest {
      * {@code tools/mutation-allowlist.txt} carries the same set with the
      * subsuming check named for each.
      *
-     * <p>Two of these are nonetheless VERIFIED, by
+     * <p>Three of these are nonetheless VERIFIED, by
      * {@code tools/repair-mutation-check.sh}: it breaks the repair each one
      * guards and requires the verifier to notice. That is how
      * {@code VERIFY_QUALIFIED_CALLS} was caught checking the qualifier it
@@ -114,7 +117,11 @@ class CheckAssertionCoverageTest {
             "VERIFY_BINDINGS_PRESERVED",
             "VERIFY_EVERYTHING_STILL_RESOLVES",
             "VERIFY_QUALIFIED_CALLS",
-            "VERIFY_REPAIRS_BIND_TO_ORIGINAL_DECLARATION");
+            "VERIFY_REPAIRS_BIND_TO_ORIGINAL_DECLARATION",
+            // Verified the same way, and it earned the entry: fault
+            // injection caught it comparing declarations without checking
+            // legality BEFORE it ever shipped.
+            "VERIFY_SHADOWED_REFERENCES");
 
     private static final Map<String, Set<String>> EXEMPT = Map.of(
             "needs an external process or filesystem fault", ENVIRONMENT,

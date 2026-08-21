@@ -55,9 +55,19 @@ class CheckIdIntegrityTest {
      * indented CALL statement, because the return-type character class can
      * absorb the leading indentation -- which made this test report three
      * phantom violations on its first run.
+     *
+     * <p>The return-type class admits SPACES, which looks wrong next to that
+     * warning and is not: a generic return type contains one
+     * ({@code Map<NameExpr, Expression>}), and excluding spaces meant such a
+     * declaration silently did not match at all. Every throw site inside the
+     * method was then attributed to whichever method matched BEFORE it, and
+     * this test reported a check as shared between two methods that do not
+     * share it. The leading-modifier anchor is what keeps indentation out,
+     * so the space is safe here -- another instance of matching on a
+     * syntactic shape rather than the property meant.
      */
     private static final Pattern DECLARATION = Pattern.compile(
-            "^ {4}(?:public |private |protected |static |final )+[\\w<>,\\[\\].?]+ +(\\w+)\\(");
+            "^ {4}(?:public |private |protected |static |final )+[\\w<>,\\[\\].? ]+ +(\\w+)\\(");
     private static final Pattern GUARD = Pattern.compile("@Guard\\(Check\\.([A-Z_]+)\\)");
     private static final Pattern THROWN = Pattern.compile("RefactorException\\(Check\\.([A-Z_]+)");
 

@@ -77,11 +77,14 @@ problems. Binding problems are the repair case. Stop and write the repair.
 **Done:** rename-field's local/parameter/pattern capture (qualify the
 reference: `this.count`, or `Config.count` for a static); rename-method's
 shadowed unqualified call to a STATIC target (qualify with the declaring
-type's FQN); inline-method's static member references.
+type's FQN); inline-method's static member references; rename-field's
+shadowed-binding escape (#1 — note the direction is INVERTED from the
+capture repair: there the renamed field is captured, here it is the captor,
+so it is the OTHER declaration's references that get qualified).
 
-**Still refusals, repairable:** `rejectNewNameAlreadyBound` (#1),
-`rejectNewNameAlreadyBoundAtReference` (#2, qualify the type reference), and
-extract-variable's `rejectNameCollision` (#3).
+**Still refusals, repairable:** `rejectNewNameAlreadyBoundAtReference`
+(#2, qualify the type reference) and extract-variable's
+`rejectNameCollision` (#3).
 
 **Fails (a) — genuinely NOT repairable, leave them:**
 `rejectNewNameDeclaredBySubtype` and `rejectNewNameAlreadyVisible`'s override
@@ -190,7 +193,8 @@ Verify structurally against the in-memory AST in that case, and say so.
   checks whether any test notices. Run it after touching a check. It only
   measures *named methods* — a refusal written as an inline `throw` is
   invisible to it, and such refusals turned out to be systematically
-  untested. Baseline: **killed=46 subsumed=8 survived=0 unmeasurable=0**.
+  untested. Baseline: **killed=47 subsumed=9 survived=0 unmeasurable=0**
+  of 56 targets.
 - **`tools/repair-mutation-check.sh`** does the same job from the other
   side, for the half the first script structurally cannot reach. A `verify*`
   method fires only when a repair produced something wrong, so with the

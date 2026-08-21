@@ -38,8 +38,8 @@ class NameCaptureTest {
     class RenameField {
 
         @Test
-        @DisplayName("renaming onto an INHERITED field name hides it and rebinds bare uses")
-        void refusesCaptureOfInheritedField() {
+        @DisplayName("an inherited binding the rename would shadow escapes to super.count")
+        void repairsCaptureOfInheritedField() {
             TestProject p = project()
                     .add("com/example/Base.java", """
                             package com.example;
@@ -55,15 +55,20 @@ class NameCaptureTest {
                             }
                             """);
 
-            // Before the fix this succeeded and sum() silently went 11 -> 20.
-            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND, ctx ->
-                    RenameFieldRefactor.run(ctx, "Child", "total", "count", true)))
-                    .hasMessageContaining("where this field is declared");
+            // Before the check existed this succeeded and sum() silently went
+            // 11 -> 20. It was then REFUSED for several rounds. It is now
+            // REPAIRED: the inherited reference escapes to `super.count`, so
+            // it keeps meaning Base.count, and sum() still returns 11.
+            p.run(ctx -> RenameFieldRefactor.run(ctx, "Child", "total", "count", true));
+
+            assertThat(p.source("com/example/Child.java"))
+                    .contains("return super.count + this.count;");
+            p.assertCompiles();
         }
 
         @Test
-        @DisplayName("renaming onto a STATIC-IMPORTED field name shadows the import")
-        void refusesCaptureOfStaticImport() {
+        @DisplayName("a static-imported binding the rename would shadow escapes to Consts.count")
+        void repairsCaptureOfStaticImport() {
             TestProject p = project()
                     .add("com/example/Consts.java", """
                             package com.example;
@@ -80,10 +85,15 @@ class NameCaptureTest {
                             }
                             """);
 
-            // Before the fix this succeeded and calc() silently went 107 -> 14.
-            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND, ctx ->
-                    RenameFieldRefactor.run(ctx, "Calc", "total", "count", true)))
-                    .hasMessageContaining("where this field is declared");
+            // Before the check existed this succeeded and calc() silently
+            // went 107 -> 14. Now repaired rather than refused: a STATIC
+            // binding takes the declaring type's name, not `super` -- which
+            // does not work for statics at all (CLAUDE.md).
+            p.run(ctx -> RenameFieldRefactor.run(ctx, "Calc", "total", "count", true));
+
+            assertThat(p.source("com/example/Calc.java"))
+                    .contains("return Consts.count + this.count;");
+            p.assertCompiles();
         }
 
 
@@ -111,6 +121,63 @@ class NameCaptureTest {
                     // message happens to contain the same words -- so the test
                     // could not tell the two checks apart.
                     .hasMessageContaining("shares a name space with its fields");
+        }
+
+        /**
+         * The repair rewrites a reference into an explicit form reaching the
+         * SAME declaration. When the shadowed binding is not a field at all
+         * there is no such form, so this stays a refusal -- rule (a) in
+         * CLAUDE.md, not a gap in the repair.
+         */
+        @Test
+        @DisplayName("a shadowed binding that is not a field has no qualified form")
+        void refusesWhenShadowedBindingIsNotAField() {
+            TestProject p = project()
+                    .add("com/example/Holder.java", """
+                            package com.example;
+                            public enum Holder {
+                                LIMIT;
+                            }
+                            """)
+                    .add("com/example/Box.java", """
+                            package com.example;
+                            import static com.example.Holder.LIMIT;
+                            public class Box {
+                                private int total = 4;
+                                public int use() { return total + LIMIT.ordinal(); }
+                            }
+                            """);
+
+            assertThat(p.expectRefused(Check.REJECT_NEW_NAME_ALREADY_BOUND, ctx ->
+                    RenameFieldRefactor.run(ctx, "Box", "total", "LIMIT", true)))
+                    .hasMessageContaining("there is no qualified form that would keep reaching it");
+        }
+
+        /**
+         * An instance field reached from an ENCLOSING type, not a
+         * superclass. {@code super.x} does not reach it and a type name does
+         * not either -- the correct form is {@code Outer.this.x}, which this
+         * repair does not synthesise. Rule (b): the fact needed is not one
+         * this repair knows how to name.
+         */
+        @Test
+        @DisplayName("an instance binding that is not inherited is refused, not guessed at")
+        void refusesShadowedInstanceFieldFromEnclosingType() {
+            TestProject p = project()
+                    .add("com/example/Outer.java", """
+                            package com.example;
+                            public class Outer {
+                                protected int count = 5;
+                                public class Inner {
+                                    private int total = 2;
+                                    public int sum() { return count + this.total; }
+                                }
+                            }
+                            """);
+
+            assertThat(p.expectRefused(Check.REJECT_SHADOWED_BINDING_NOT_QUALIFIABLE, ctx ->
+                    RenameFieldRefactor.run(ctx, "Inner", "total", "count", true)))
+                    .hasMessageContaining("which is not inherited from a superclass");
         }
 
         @Test

@@ -63,3 +63,4 @@ InlineMethodRefactor.java|verifyBindingsPreserved   # post-transformation guard;
 InlineMethodRefactor.java|verifyEverythingStillResolves  # same, the per-node resolution half
 InlineMethodRefactor.java|verifyRepairsBindToOriginalDeclaration  # guards the static-field repair; unkillable by DISABLING it, but verified by fault injection -- tools/repair-mutations.txt drops the qualifier from the repair and this catches it
 RenameMethodRefactor.java|verifyQualifiedCalls  # guards the qualify-shadowed-call repair; verified by fault injection in tools/repair-mutations.txt -- which is how it was caught checking the qualifier it was HANDED rather than the one emitted
+RenameFieldRefactor.java|verifyShadowedReferences  # guards the escape-the-shadow repair; unreachable while the repair works, and verified by fault injection in tools/repair-mutations.txt -- which caught it comparing declarations without checking legality before it shipped

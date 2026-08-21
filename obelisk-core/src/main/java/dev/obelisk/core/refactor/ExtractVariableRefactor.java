@@ -3,6 +3,7 @@ package dev.obelisk.core.refactor;
 import dev.obelisk.guard.Check;
 import dev.obelisk.guard.Guard;
 import com.github.javaparser.Position;
+import com.github.javaparser.Range;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.body.CallableDeclaration;
@@ -27,6 +28,9 @@ import com.github.javaparser.ast.stmt.DoStmt;
 import com.github.javaparser.ast.stmt.ForStmt;
 import com.github.javaparser.ast.stmt.Statement;
 import com.github.javaparser.ast.stmt.WhileStmt;
+import com.github.javaparser.resolution.declarations.ResolvedDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedFieldDeclaration;
+import com.github.javaparser.resolution.declarations.ResolvedValueDeclaration;
 import com.github.javaparser.resolution.types.ResolvedType;
 import dev.obelisk.core.DiffUtil;
 import dev.obelisk.core.ProjectContext;
@@ -41,6 +45,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -158,7 +163,11 @@ public final class ExtractVariableRefactor {
         rejectUnanchorableStatement(anchorStatement);
 
         rejectNonValueExpression(target);
-        rejectNameCollision(ctx, target, name);
+        rejectLocalNameCollision(target, name);
+        // REPAIR: uses of a FIELD the new local would shadow get qualified
+        // so they keep reaching the field.
+        Map<NameExpr, String> shadowedFieldReferences =
+                planShadowedFieldReferences(ctx, target, anchorStatement, name);
 
         Position anchorBegin = anchorStatement.getBegin()
                 .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR, "Internal error: enclosing statement has no position"));
@@ -178,11 +187,37 @@ public final class ExtractVariableRefactor {
         // line among otherwise-CRLF ones.
         String lineEnding = original.contains("\r\n") ? "\r\n" : "\n";
 
-        String updated = original.substring(0, lineStart)
-                + indent + "var " + name + " = " + exprText + ";" + lineEnding
-                + original.substring(lineStart, exprStart)
-                + name
-                + original.substring(exprEndExclusive);
+        // Every rewrite as one ordered set of edits on the ORIGINAL text.
+        // This refactor splices text rather than mutating the AST, so a
+        // repair has to be spliced too -- and doing the qualification in a
+        // separate pass would invalidate the offsets computed above.
+        List<TextEdit> edits = new ArrayList<>();
+        for (Map.Entry<NameExpr, String> entry : shadowedFieldReferences.entrySet()) {
+            Range range = entry.getKey().getRange()
+                    .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR,
+                            "Internal error: shadowed reference has no range"));
+            int refStart = offsetOf(original, range.begin.line, range.begin.column);
+            int refEnd = offsetOf(original, range.end.line, range.end.column) + 1;
+            // A reference INSIDE the extracted expression is carried along
+            // with it into the initializer, where the new local is already
+            // in scope -- so it needs qualifying there too, and the edit
+            // that moves the expression must not also overwrite it.
+            edits.add(new TextEdit(refStart, refEnd, entry.getValue()));
+        }
+        String exprTextQualified = applyEdits(exprText, edits.stream()
+                .filter(e -> e.start() >= exprStart && e.end() <= exprEndExclusive)
+                .map(e -> new TextEdit(e.start() - exprStart, e.end() - exprStart, e.replacement()))
+                .toList());
+
+        List<TextEdit> outside = edits.stream()
+                .filter(e -> e.end() <= exprStart || e.start() >= exprEndExclusive)
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        outside.add(new TextEdit(exprStart, exprEndExclusive, name));
+        outside.add(new TextEdit(lineStart, lineStart,
+                indent + "var " + name + " = " + exprTextQualified + ";" + lineEnding));
+
+        String updated = applyEdits(original, outside);
+        verifyShadowedFieldReferences(shadowedFieldReferences, updated, name);
 
         Map<Path, String> diffs = new LinkedHashMap<>();
         List<Path> changedFiles = List.of();
@@ -864,53 +899,183 @@ public final class ExtractVariableRefactor {
         }
     }
 
+    /** One replacement over a half-open range of the original text. */
+    private record TextEdit(int start, int end, String replacement) {
+    }
+
     /**
-     * Refuses to introduce {@code name} if it would collide with an
-     * existing local variable or parameter already in scope -- checks EVERY
-     * enclosing method/constructor/initializer/lambda body reachable by
-     * walking outward from the target, not just the nearest one: an
-     * anonymous or local class's method is itself a {@link
-     * CallableDeclaration}, so a naive nearest-only lookup starting from a
-     * reference inside one would stop there and miss an OUTER method's
-     * captured parameter/local of the same name (confirmed via repro: an
-     * anonymous {@code Runnable}'s method referencing an outer method's
-     * {@code total} parameter, extracting a sub-expression as {@code --name
-     * total}, produced a self-referential {@code var total = total + 1;}
-     * with no collision reported). A plain lambda doesn't have this gap on
-     * its own since {@link LambdaExpr} isn't a {@link CallableDeclaration}
-     * -- but the same broadened walk is used uniformly rather than trying to
-     * special-case which boundary actually needed it.
+     * Applies edits back-to-front so each one's offsets stay valid.
      *
-     * <p>Also refuses when the name already binds to a FIELD (declared,
-     * inherited, or static-imported) at the extraction point. An earlier
-     * version deliberately allowed this, reasoning that "a local shadowing a
-     * field is legal Java, just ordinary shadowing, not a compile error" --
-     * but legal is not the same as meaning-preserving. The new local shadows
-     * the field for the WHOLE REST OF THE BLOCK, so every later unqualified
-     * use of that name silently changes what it refers to. Confirmed by
-     * repro with {@code static int limit = 5;}: extracting {@code
-     * compute(3)} as {@code --name limit} left a trailing {@code
-     * println("limit=" + limit)} printing 6 instead of 5, with a clean
-     * compile.
+     * <p>Back-to-front is the whole trick: applying forwards shifts every
+     * later offset by the length delta, which is the classic way a
+     * multi-edit splice lands one edit in the wrong place. Ties are ordered
+     * so an INSERTION at a position lands before a replacement starting
+     * there, which is what puts the new declaration line above the
+     * statement it is anchored to.
      */
-    @Guard(Check.REJECT_NAME_COLLISION)
-    private static void rejectNameCollision(ProjectContext ctx, Expression target, String name) {
-        NameBindingChecker.valueBindingAt(ctx.typeSolver(), target, name).ifPresent(bound -> {
-            throw new RefactorException(Check.REJECT_NAME_COLLISION, "Cannot introduce a variable named '" + name + "': that name already "
-                    + "means " + bound + " here. The new variable would shadow it for the rest of the enclosing "
-                    + "block, silently changing what every later unqualified '" + name + "' refers to.");
-        });
+    private static String applyEdits(String text, List<TextEdit> edits) {
+        List<TextEdit> ordered = new ArrayList<>(edits);
+        ordered.sort(java.util.Comparator.comparingInt(TextEdit::start)
+                .thenComparingInt(TextEdit::end).reversed());
+        StringBuilder out = new StringBuilder(text);
+        for (TextEdit edit : ordered) {
+            out.replace(edit.start(), edit.end(), edit.replacement());
+        }
+        return out.toString();
+    }
+
+    /**
+     * Proves every reference the new local would have shadowed came out
+     * qualified.
+     *
+     * <p>Textual, and it has to be: this refactor never mutates the AST, so
+     * there is no rewritten node to resolve. It checks the produced source
+     * contains each qualified form and no longer contains a bare occurrence
+     * that the local would capture -- the strongest statement available
+     * without re-parsing, which would resolve against the pre-edit file on
+     * disk anyway (CLAUDE.md).
+     */
+    @Guard(Check.VERIFY_SHADOWED_FIELD_REFERENCES)
+    private static void verifyShadowedFieldReferences(Map<NameExpr, String> shadowed, String updated, String name) {
+        for (String qualified : new LinkedHashSet<>(shadowed.values())) {
+            // The form must actually BE a qualification. Checking only that
+            // the text is present is vacuous when the "qualified" form is
+            // the bare name: the name is obviously still there, the repair
+            // reports success, and the local captures the field exactly as
+            // it would have without any repair at all. Fault injection with
+            // an empty qualifier walked straight through the presence check
+            // -- the quietest way a repair can fail is to change nothing.
+            if (!qualified.endsWith("." + name) || qualified.length() <= name.length() + 1) {
+                throw new RefactorException(Check.VERIFY_SHADOWED_FIELD_REFERENCES, "Refusing to introduce '"
+                        + name + "': the escape form '" + qualified + "' does not qualify '" + name
+                        + "' at all, so the new variable would still shadow the field. Nothing has been written.");
+            }
+            if (!updated.contains(qualified)) {
+                throw new RefactorException(Check.VERIFY_SHADOWED_FIELD_REFERENCES, "Refusing to introduce '"
+                        + name + "': a use of the field it shadows had to be written as '" + qualified
+                        + "' to keep reaching the field, and the result does not contain it. Nothing has been "
+                        + "written.");
+            }
+        }
+        // Count what the repair claimed against what the text shows, so a
+        // reference the plan silently dropped cannot pass unnoticed -- the
+        // failure mode fault injection found in rename-class's verifier.
+        long expected = shadowed.size();
+        long present = shadowed.values().stream()
+                .mapToLong(qualified -> countOccurrences(updated, qualified))
+                .sum();
+        if (present < expected) {
+            throw new RefactorException(Check.VERIFY_SHADOWED_FIELD_REFERENCES, "Refusing to introduce '" + name
+                    + "': " + expected + " use(s) of the shadowed field needed qualifying, but the result "
+                    + "contains only " + present + ". Nothing has been written.");
+        }
+    }
+
+    private static long countOccurrences(String text, String needle) {
+        long count = 0;
+        for (int i = text.indexOf(needle); i >= 0; i = text.indexOf(needle, i + needle.length())) {
+            count++;
+        }
+        return count;
+    }
+
+    /**
+     * Refuses only the half of a name collision that has no explicit form:
+     * the name already belongs to a LOCAL or PARAMETER in an enclosing
+     * scope.
+     *
+     * <p>Two locals of one name in overlapping scopes is a compile error
+     * (JLS 6.4), and a local cannot be qualified -- there is no
+     * {@code this.x} for it. Rule (b) in CLAUDE.md: no fact at the site
+     * would let a repair name the one that is being hidden.
+     *
+     * <p>The FIELD half used to be refused here too and is now repaired --
+     * see {@link #planShadowedFieldReferences}.
+     */
+    @Guard(Check.REJECT_LOCAL_NAME_COLLISION)
+    private static void rejectLocalNameCollision(Expression target, String name) {
         for (Node scopeRoot : allEnclosingScopeRoots(target)) {
             boolean collides = scopeRoot.findAll(VariableDeclarator.class).stream()
                     .anyMatch(vd -> vd.getNameAsString().equals(name))
                     || scopeRoot.findAll(Parameter.class).stream()
                     .anyMatch(p -> p.getNameAsString().equals(name));
             if (collides) {
-                throw new RefactorException(Check.REJECT_NAME_COLLISION, "Cannot introduce a variable named '" + name + "': an enclosing "
-                        + "method/constructor/initializer/lambda already has a local variable or parameter with "
-                        + "that name.");
+                throw new RefactorException(Check.REJECT_LOCAL_NAME_COLLISION, "Cannot introduce a variable named '"
+                        + name + "': an enclosing method/constructor/initializer/lambda already has a local "
+                        + "variable or parameter with that name.");
             }
         }
+    }
+
+    /**
+     * The references to a FIELD that the new local would shadow, each with
+     * the qualified text that keeps it reaching that field.
+     *
+     * <p>The hazard, confirmed by repro with {@code static int limit = 5;}:
+     * extracting {@code compute(3)} as {@code --name limit} left a trailing
+     * {@code println("limit=" + limit)} printing 6 instead of 5, compiling
+     * cleanly. The new local shadows the field for the whole rest of the
+     * block.
+     *
+     * <p>A binding hazard, so per CLAUDE.md the repair case: those uses get
+     * {@code this.limit} or {@code Config.limit} and keep meaning the field.
+     *
+     * <p><b>This edits code the user did not point at.</b> extract-variable
+     * addresses ONE expression by position, and the repair rewrites other
+     * statements in the same block. That is a deliberate product decision,
+     * the same one rename-field's capture repair already makes, and the
+     * alternative is refusing an extraction over a name the file happens to
+     * use elsewhere.
+     *
+     * <p>Only references at or after the anchor statement are touched. The
+     * local's scope starts at its declaration, so an earlier use of the
+     * name is not shadowed and must be left exactly as it is.
+     */
+    private static Map<NameExpr, String> planShadowedFieldReferences(ProjectContext ctx, Expression target,
+                                                                       Statement anchorStatement, String name) {
+        Optional<ResolvedDeclaration> bound =
+                NameBindingChecker.valueDeclarationAt(ctx.typeSolver(), target, name);
+        if (bound.isEmpty()) {
+            return Map.of();
+        }
+        if (!(bound.get() instanceof ResolvedFieldDeclaration field)) {
+            // Not a field and not a local either (rejectLocalNameCollision
+            // ran first) -- an enum constant, say. No qualified form.
+            throw new RefactorException(Check.REJECT_NAME_COLLISION, "Cannot introduce a variable named '" + name
+                    + "': that name already means " + NameBindingChecker.describeOf(bound.get())
+                    + " here, which is not a field and so cannot be reached by any qualified form.");
+        }
+
+        Node scope = anchorStatement.getParentNode().orElse(anchorStatement);
+        Position from = anchorStatement.getBegin()
+                .orElseThrow(() -> new RefactorException(Check.INTERNAL_ERROR,
+                        "Internal error: enclosing statement has no position"));
+        String owner = field.declaringType().getQualifiedName();
+        String qualifier = field.isStatic() ? field.declaringType().getName() + "." : "this.";
+
+        Map<NameExpr, String> shadowed = new LinkedHashMap<>();
+        for (NameExpr reference : scope.findAll(NameExpr.class)) {
+            if (!reference.getNameAsString().equals(name)) {
+                continue;
+            }
+            if (reference.getBegin().filter(at -> at.isBefore(from)).isPresent()) {
+                continue;
+            }
+            try {
+                ResolvedValueDeclaration resolved = reference.resolve();
+                if (resolved instanceof ResolvedFieldDeclaration f
+                        && f.declaringType().getQualifiedName().equals(owner)
+                        && f.getName().equals(name)) {
+                    shadowed.put(reference, qualifier + name);
+                }
+            } catch (RuntimeException e) {
+                throw new RefactorException(Check.SHADOWED_FIELD_REFERENCE_UNRESOLVABLE, "Cannot introduce a variable "
+                        + "named '" + name + "': an existing '" + name + "' reference at "
+                        + reference.getBegin().map(Object::toString).orElse("?") + " could not be resolved ("
+                        + e.getMessage() + "), so whether the new variable would shadow it cannot be established.");
+            }
+        }
+        return shadowed;
     }
 
     /**

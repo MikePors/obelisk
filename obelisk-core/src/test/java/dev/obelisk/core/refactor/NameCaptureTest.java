@@ -534,8 +534,8 @@ class NameCaptureTest {
     class ExtractVariable {
 
         @Test
-        @DisplayName("the introduced name must not shadow a field for the rest of the block")
-        void refusesShadowingAField() {
+        @DisplayName("a field the new local would shadow is qualified for the rest of the block")
+        void repairsShadowingAField() {
             TestProject p = project()
                     .add("com/example/Main.java", """
                             package com.example;
@@ -550,10 +550,77 @@ class NameCaptureTest {
                             """);
 
             Path file = dir.resolve("src/main/java/com/example/Main.java");
+            // `compute(3)` on line 6. Before the check existed this
+            // succeeded and the trailing `limit` silently printed 6 instead
+            // of 5. It was then refused. It is now REPAIRED: the later use
+            // is qualified, so it still reads the field.
+            p.run(ctx -> ExtractVariableRefactor.run(ctx, file, 6, 17, 6, 26, "limit", true));
+
+            String after = p.source("com/example/Main.java");
+            assertThat(after).contains("var limit = compute(3);");
+            assertThat(after).contains("\" limit=\" + Main.limit");
+            p.assertCompiles();
+        }
+
+        /**
+         * The local half of the collision, which stays a refusal: two
+         * locals of one name in overlapping scopes is a compile error (JLS
+         * 6.4), and there is no {@code this.x} for a local. Rule (b).
+         */
+        @Test
+        @DisplayName("a name an enclosing local already uses cannot be qualified away")
+        void refusesCollisionWithLocal() {
+            TestProject p = project()
+                    .add("com/example/Main.java", """
+                            package com.example;
+                            public class Main {
+                                static int compute(int n) { return n + 3; }
+                                public static String go() {
+                                    int total = 1;
+                                    int a = compute(3);
+                                    return "" + a + total;
+                                }
+                            }
+                            """);
+
+            Path file = dir.resolve("src/main/java/com/example/Main.java");
+            // `compute(3)` on line 6.
+            assertThat(p.expectRefused(Check.REJECT_LOCAL_NAME_COLLISION, ctx ->
+                    ExtractVariableRefactor.run(ctx, file, 6, 17, 6, 26, "total", true)))
+                    .hasMessageContaining("already has a local variable or parameter with that name");
+        }
+
+        /**
+         * The other residue: the shadowed name is an enum constant, which
+         * is not a field, so no qualified form reaches it. Rule (a).
+         */
+        @Test
+        @DisplayName("a shadowed name that is not a field has no qualified form")
+        void refusesShadowingANonField() {
+            TestProject p = project()
+                    .add("com/example/Size.java", """
+                            package com.example;
+                            public enum Size {
+                                LARGE;
+                            }
+                            """)
+                    .add("com/example/Main.java", """
+                            package com.example;
+                            import static com.example.Size.LARGE;
+                            public class Main {
+                                static int compute(int n) { return n + 3; }
+                                public static String go() {
+                                    int a = compute(3);
+                                    return "" + a + LARGE;
+                                }
+                            }
+                            """);
+
+            Path file = dir.resolve("src/main/java/com/example/Main.java");
             // `compute(3)` on line 6.
             assertThat(p.expectRefused(Check.REJECT_NAME_COLLISION, ctx ->
-                    ExtractVariableRefactor.run(ctx, file, 6, 17, 6, 26, "limit", true)))
-                    .hasMessageContaining("shadow it for the rest of the enclosing block");
+                    ExtractVariableRefactor.run(ctx, file, 6, 17, 6, 26, "LARGE", true)))
+                    .hasMessageContaining("cannot be reached by any qualified form");
         }
 
         @Test

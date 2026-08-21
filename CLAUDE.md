@@ -82,10 +82,13 @@ shadowed-binding escape (#1 — note the direction is INVERTED from the
 capture repair: there the renamed field is captured, here it is the captor,
 so it is the OTHER declaration's references that get qualified);
 rename-class's qualify-the-reference repair (#2 — type references,
-static-member qualifiers, and dropping an import that would collide).
+static-member qualifiers, and dropping an import that would collide);
+extract-variable's escape-the-new-local repair (#3 — and note it splices
+TEXT, never the AST, so both repair and verification are textual).
 
-**Still refusals, repairable:** extract-variable's `rejectNameCollision`
-(#3).
+**Still refusals, repairable:** none of the three on the original backlog.
+The next candidates are the PoCs in #16–#18, whose repairs are data-flow
+and receiver-shaped rather than binding-shaped.
 
 **Fails (a) — genuinely NOT repairable, leave them:**
 `rejectNewNameDeclaredBySubtype` and `rejectNewNameAlreadyVisible`'s override
@@ -194,8 +197,8 @@ Verify structurally against the in-memory AST in that case, and say so.
   checks whether any test notices. Run it after touching a check. It only
   measures *named methods* — a refusal written as an inline `throw` is
   invisible to it, and such refusals turned out to be systematically
-  untested. Baseline: **killed=47 subsumed=10 survived=0 unmeasurable=0**
-  of 57 targets.
+  untested. Baseline: **killed=47 subsumed=11 survived=0 unmeasurable=0**
+  of 58 targets.
 - **`tools/repair-mutation-check.sh`** does the same job from the other
   side, for the half the first script structurally cannot reach. A `verify*`
   method fires only when a repair produced something wrong, so with the
@@ -205,6 +208,10 @@ Verify structurally against the in-memory AST in that case, and say so.
   notice: a failing test whose stack trace names it. Going red is not enough,
   since a broken repair can equally well emit code that will not compile.
   Corruptions live in `tools/repair-mutations.txt`, one per repair.
+  **Every verifier written so far has failed its first run of this**, all
+  six for the same reason: each validated the input it was HANDED rather
+  than the result that was produced. If you are writing a `verify*`, assume
+  you have made that mistake and go looking for it.
 
   It is worth knowing what its first run found, because "unverifiable"
   had been accepted for both: **two of the three verifiers were checking

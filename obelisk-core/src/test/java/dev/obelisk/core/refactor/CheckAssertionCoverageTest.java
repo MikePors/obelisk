@@ -80,6 +80,7 @@ class CheckAssertionCoverageTest {
             // Fires when a pre-existing reference to the NEW name cannot be
             // resolved, so whether the rename would rebind it is unknowable.
             "SHADOWED_REFERENCE_UNRESOLVABLE",
+            "SHADOWED_FIELD_REFERENCE_UNRESOLVABLE",
             // Its own two throw sites are both resolver failures: the target
             // class not resolving, and an ancestor with no type declaration.
             // The hazard it exists for is refused by
@@ -97,7 +98,7 @@ class CheckAssertionCoverageTest {
      * {@code tools/mutation-allowlist.txt} carries the same set with the
      * subsuming check named for each.
      *
-     * <p>Four of these are nonetheless VERIFIED, by
+     * <p>Five of these are nonetheless VERIFIED, by
      * {@code tools/repair-mutation-check.sh}: it breaks the repair each one
      * guards and requires the verifier to notice. That is how
      * {@code VERIFY_QUALIFIED_CALLS} was caught checking the qualifier it
@@ -124,7 +125,11 @@ class CheckAssertionCoverageTest {
             "VERIFY_SHADOWED_REFERENCES",
             // Cross-file, so structural rather than resolution-based -- see
             // its Javadoc. Verified by fault injection all the same.
-            "VERIFY_QUALIFIED_TYPE_REFERENCES");
+            "VERIFY_QUALIFIED_TYPE_REFERENCES",
+            // Textual rather than resolution-based -- extract-variable
+            // splices source and never mutates the AST, so there is no
+            // rewritten node to resolve.
+            "VERIFY_SHADOWED_FIELD_REFERENCES");
 
     private static final Map<String, Set<String>> EXEMPT = Map.of(
             "needs an external process or filesystem fault", ENVIRONMENT,

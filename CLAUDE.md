@@ -22,14 +22,49 @@ was already there, and adding more of it does not make the tool more useful.
 **This has drifted to refusal-only twice.** Score: **3 repair methods, 48
 `reject*` methods.** When in doubt, that ratio is the smell.
 
+### What repair actually is
+
+Repair is not "add a qualifier". Qualifying a name is the **binding
+instance** of a general move, and it is the instance that shipped first only
+because the first two bugs that forced it (rename-field, rename-method
+capture) were both binding bugs:
+
+> A transformation discards an **implicit link** between two points in the
+> program. Repair means finding explicit syntax that restores the same link,
+> then re-running the analysis that would have found the link to verify it
+> still points at the original target.
+
+`docs/` §3 quotes Schäfer & de Moor saying the framework "generalises to
+control flow, data flow, and synchronisation", and §6 describes it as
+"'locking' references to declarations and then synthesising concrete
+references". Reading that as binding-only is OUR narrowing, not theirs.
+
+| Dependency | The implicit link | The explicit construct that restores it |
+|---|---|---|
+| Binding *(shipped)* | name → declaration | a qualifier (`Util.SCALE`, `this.count`) |
+| Data flow, inward | a use → its defining scope | a **parameter** carrying the value in |
+| Data flow, outward | a later use → a value assigned inside the excised region | a **return value**, assigned back at the call site |
+| Receiver | an implicit `this` → the object whose state the method reads | an **explicit receiver** taken from a reference already in scope |
+| Declared type | a variable's static type → the members invoked through it | a **narrower declared type** that still declares them |
+
+So a parameter IS a repair, not a precondition. A receiver IS a repair, not
+a different kind of thing.
+
 ### The decision rule
 
-When you find a hazard, ask **what kind of hazard is it?**
+Repair is possible when the broken dependency can be restored **at the same
+use site, from facts already determinable at that site**, without changing
+what is reachable from anywhere else.
 
-| The hazard is… | Then… |
-|---|---|
-| A **name or reference would bind somewhere else** after the transformation | **REPAIR IT.** Synthesise a qualified reference (`Util.SCALE`, `super.count`, `Outer.this.x`), then verify it still binds to the original declaration. |
-| Something the **compiler does differently** — `<clinit>` timing, constant-expression promotion, evaluation order, statement-position legality, `var` inference, an implicit conversion | **Refuse.** Repair synthesises references; it cannot restore a dropped class-initialization trigger or un-promote a constant. |
+It is impossible when either:
+
+| | Why no syntax fixes it | Examples |
+|---|---|---|
+| **(a)** Restoring it would mean suppressing semantics the language attaches **irreversibly to the original construct** | There is no reference form meaning "behave as if this rule does not apply here" | an override relationship; a `<clinit>` trigger; constant folding; an implicit conversion |
+| **(b)** **No fact is in scope** to draw on — the site does not contain, and cannot contain without inventing new data flow, what the repair needs | Synthesising it would be invention, not restoration | no reference to the receiver anywhere in scope; encoding a non-local exit, which needs a change to the CALLER's control shape; choosing a supertype that must satisfy many sites jointly |
+
+This predicts the answers instead of listing them. Check (a) then (b); if
+neither fires, **write the repair**.
 
 ### The tell that you are drifting
 
@@ -42,30 +77,42 @@ problems. Binding problems are the repair case. Stop and write the repair.
 **Done:** rename-field's local/parameter/pattern capture (qualify the
 reference: `this.count`, or `Config.count` for a static); rename-method's
 shadowed unqualified call to a STATIC target (qualify with the declaring
-type's FQN).
+type's FQN); inline-method's static member references.
 
-**Still refusals, repairable:** `rejectNewNameAlreadyBound`,
-`rejectNewNameAlreadyBoundAtReference` (qualify the type reference), and
-extract-variable's `rejectNameCollision`.
+**Still refusals, repairable:** `rejectNewNameAlreadyBound` (#1),
+`rejectNewNameAlreadyBoundAtReference` (#2, qualify the type reference), and
+extract-variable's `rejectNameCollision` (#3).
 
-Also not repairable: a shadowed call to an INSTANCE method — the right
-receiver depends on whether the target is declared, inherited, or reached
-from an inner class, and `super` fails for statics and through interfaces.
+**Fails (a) — genuinely NOT repairable, leave them:**
+`rejectNewNameDeclaredBySubtype` and `rejectNewNameAlreadyVisible`'s override
+half. You cannot qualify away an override relationship: no reference form
+says "resolve statically to this one, ignore polymorphism".
 
-**Genuinely NOT repairable, leave them:** `rejectNewNameDeclaredBySubtype`
-and `rejectNewNameAlreadyVisible`'s override half — you cannot qualify away
-an override relationship. rename-field's hierarchy-hiding clause is also out:
-the correct qualifier depends on where the target sits relative to the hider,
-so there is no single safe rewrite.
+**Fails (b):** rename-field's hierarchy-hiding clause — the correct qualifier
+depends on where the target sits relative to the hider, so there are several
+truthful answers and no single one determinable at the site.
+
+A shadowed call to an INSTANCE method fails (b) **only when no receiver is in
+scope**. That refusal was written as though the whole case were hopeless; the
+restricted case, where a reference to the right object already exists at the
+call site, is ordinary repair. Same for move-instance-method: PoC in #17,
+and #19 spikes whether the no-receiver-in-scope half is really unrepairable.
 
 Doing this also fixes a real problem with the verification pass: it currently
-survives mutation because, with one repair in the codebase, it has almost
+survives mutation because, with three repairs in the codebase, it has almost
 nothing to guard. **Verification and repair are a pair.** Build the repair and
 verification becomes load-bearing and testable.
 
 Caveats worth respecting: a qualifier must be accessible; `super.x` does not
 work for statics or through interfaces; an inner class needs `Outer.this`;
 and repair edits code the user did not point at, which is a product decision.
+
+One more, about this section itself: the binding row of the table above is
+SHIPPED and reproduced. The other four rows are **argued**, from the prior
+art and by analogy to the binding case — they have not been built here yet.
+#16, #17 and #18 are the proofs of concept that decide whether they hold;
+#19 to #22 attack the refusals. Until those land, do not cite this table as
+though it were measured. Reproduce, don't reason.
 
 ---
 

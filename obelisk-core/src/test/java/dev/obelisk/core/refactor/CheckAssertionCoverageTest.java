@@ -98,13 +98,17 @@ class CheckAssertionCoverageTest {
      * {@code tools/mutation-allowlist.txt} carries the same set with the
      * subsuming check named for each.
      *
-     * <p>Five of these are nonetheless VERIFIED, by
-     * {@code tools/repair-mutation-check.sh}: it breaks the repair each one
-     * guards and requires the verifier to notice. That is how
-     * {@code VERIFY_QUALIFIED_CALLS} was caught checking the qualifier it
-     * was handed rather than the one emitted. The two that guard no
-     * particular repair are still genuinely untested, and saying so is the
-     * point of this list.
+     * <p>All but one of the {@code VERIFY_*} entries are nonetheless
+     * VERIFIED, by {@code tools/repair-mutation-check.sh}: it breaks the
+     * repair each one guards and requires the verifier to notice. Every one
+     * of them failed that on its first run, each for the same reason --
+     * checking the input it was handed rather than the result produced.
+     *
+     * <p>The exception is {@code VERIFY_EVERYTHING_STILL_RESOLVES}, and it
+     * is exempt as SUBSUMED on evidence rather than by assumption: a repair
+     * emitting {@code __unresolvable__.SCALE} was caught by
+     * {@code verifyBindingsPreserved}'s type resolution, which runs first,
+     * so no corruption of a repair reaches the per-node half.
      */
     private static final Set<String> SUBSUMED_OR_BACKSTOP = Set.of(
             "REJECT_SELF_RECURSION",

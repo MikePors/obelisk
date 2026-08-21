@@ -59,8 +59,8 @@ InlineMethodRefactor.java|rejectDeferredEvaluationConstructs  # lambda half: a l
 RenameMethodRefactor.java|rejectDuplicateSignature  # requires name AND matching parameter list on the owner's declared methods; rejectNewNameAlreadyVisible refuses on the bare name alone, against the same owners, so this is a strict subset
 
 # --- (b) BACKSTOPS: unreachable while every precondition holds ---
-InlineMethodRefactor.java|verifyBindingsPreserved   # post-transformation guard; fires only if a precondition missed something, which by definition cannot be written as a test
-InlineMethodRefactor.java|verifyEverythingStillResolves  # same, the per-node resolution half
+InlineMethodRefactor.java|verifyBindingsPreserved   # post-transformation guard, unkillable by disabling it, but VERIFIED by fault injection -- tools/repair-mutations.txt skips the argument substitution and this catches it
+InlineMethodRefactor.java|verifyEverythingStillResolves  # (a) SUBSUMED, and MEASURED as such: a repair emitting `__unresolvable__.SCALE` was caught by verifyBindingsPreserved's type resolution (line ~651), which runs first, so no corruption of a repair reaches the per-node half. It was previously listed as an untested backstop; it is a subsumed check
 InlineMethodRefactor.java|verifyRepairsBindToOriginalDeclaration  # guards the static-field repair; unkillable by DISABLING it, but verified by fault injection -- tools/repair-mutations.txt drops the qualifier from the repair and this catches it
 RenameMethodRefactor.java|verifyQualifiedCalls  # guards the qualify-shadowed-call repair; verified by fault injection in tools/repair-mutations.txt -- which is how it was caught checking the qualifier it was HANDED rather than the one emitted
 RenameFieldRefactor.java|verifyShadowedReferences  # guards the escape-the-shadow repair; unreachable while the repair works, and verified by fault injection in tools/repair-mutations.txt -- which caught it comparing declarations without checking legality before it shipped

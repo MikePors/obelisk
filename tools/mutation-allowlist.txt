@@ -21,13 +21,27 @@
 #
 #   (b) BACKSTOP -- the check only fires when something UPSTREAM has already
 #       failed, so with every precondition intact it is unreachable by
-#       construction. No test can kill it, because writing one would mean
-#       anticipating the hazard -- and an anticipated hazard gets a
-#       precondition instead. Be honest about the cost: a backstop on this
-#       list is also UNVERIFIED. It could be silently broken and nothing
-#       would notice. Its value is that it fails closed if a precondition is
-#       ever loosened or found incomplete, which has happened repeatedly
-#       here; that is worth having, but it is not the same as being tested.
+#       construction. No test can kill it by DISABLING it, because writing
+#       one would mean anticipating the hazard -- and an anticipated hazard
+#       gets a precondition instead.
+#
+#       This list used to add: "a backstop here is also UNVERIFIED. It could
+#       be silently broken and nothing would notice." For the backstops that
+#       guard a REPAIR, that is no longer true, and the correction is worth
+#       stating plainly because the conclusion was wrong rather than merely
+#       incomplete. Disabling the verifier is not the only mutation
+#       available -- you can instead BREAK THE REPAIR IT GUARDS and require
+#       the verifier to notice. tools/repair-mutation-check.sh does exactly
+#       that, and the first run of it found TWO of these three verifying
+#       something other than what they claimed: one checked the qualifier it
+#       was HANDED rather than the one the repair emitted, and one proved a
+#       repaired reference bound to the right declaration without checking
+#       the reference was legal at all. Both passed a corrupted repair.
+#
+#       So: a backstop guarding a repair belongs in tools/repair-mutations.txt
+#       and is verified there. A backstop guarding nothing in particular --
+#       verifyBindingsPreserved's type comparison, verifyEverythingStillResolves
+#       -- is still genuinely untested, and for those the old warning stands.
 #
 # This file is itself a hazard: an entry added on a plausible-sounding but
 # WRONG justification converts a real signal into permanent silence. That has
@@ -47,5 +61,5 @@ RenameMethodRefactor.java|rejectDuplicateSignature  # requires name AND matching
 # --- (b) BACKSTOPS: unreachable while every precondition holds ---
 InlineMethodRefactor.java|verifyBindingsPreserved   # post-transformation guard; fires only if a precondition missed something, which by definition cannot be written as a test
 InlineMethodRefactor.java|verifyEverythingStillResolves  # same, the per-node resolution half
-InlineMethodRefactor.java|verifyRepairsBindToOriginalDeclaration  # same, guards the static-field repair; repair qualifies with an FQN, which cannot bind elsewhere, so it is unreachable unless the repair itself regresses
-RenameMethodRefactor.java|verifyQualifiedCalls  # (b) BACKSTOP: guards the qualify-shadowed-call repair; unreachable while the repair works, since it fires only if the synthesised qualifier fails to name a type declaring the renamed method
+InlineMethodRefactor.java|verifyRepairsBindToOriginalDeclaration  # guards the static-field repair; unkillable by DISABLING it, but verified by fault injection -- tools/repair-mutations.txt drops the qualifier from the repair and this catches it
+RenameMethodRefactor.java|verifyQualifiedCalls  # guards the qualify-shadowed-call repair; verified by fault injection in tools/repair-mutations.txt -- which is how it was caught checking the qualifier it was HANDED rather than the one emitted

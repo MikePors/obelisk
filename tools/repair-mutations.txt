@@ -1,0 +1,39 @@
+# Fault injection for the REPAIR half of transform-repair-verify.
+#
+# tools/mutation-check.sh answers "if this CHECK were gone, would a test
+# notice?" It cannot answer that for a verify* method that only fires when a
+# repair has gone wrong: with every precondition intact and the repair
+# working, the verifier is unreachable by construction, so disabling it
+# changes nothing and it is reported SUBSUMED/allowlisted forever. The
+# allowlist says so in as many words -- a backstop on it "is also UNVERIFIED.
+# It could be silently broken and nothing would notice."
+#
+# This file closes that gap from the other side: instead of removing the
+# verifier, BREAK THE REPAIR IT GUARDS, and require that the verifier notices.
+# A verifier that stays silent while its repair emits a wrong reference is a
+# verifier that is not doing its job, and that is exactly the failure the
+# allowlist admits it cannot otherwise detect.
+#
+# This is not a new idea here, only an automated one. docs/ records the suite
+# once being validated by hand this way -- "deliberately reintroducing three
+# previously-fixed bugs (... making repair stop qualifying ...) caused exactly
+# the tests covering those hazards to fail". Doing it by hand is how it stops
+# happening.
+#
+# Format, pipe-separated:
+#   <java file>|<exact source text to replace>|<replacement>|<marker>|<why this is a real corruption>
+#
+# <marker> is the name of the method that MUST appear in a failing test's
+# stack trace. Asserting on the marker rather than merely "the suite went red"
+# is the point: a corrupted repair could equally well fail by emitting code
+# that does not compile, which proves nothing about the verifier.
+#
+# The search text must match EXACTLY ONCE. A stale entry that matches nothing
+# is a FAILURE, not a skip -- a silently-skipped mutation is how this repo's
+# bulk edits went wrong three times ("drive bulk edits off ground truth").
+
+RenameMethodRefactor.java|Expression scope = new NameExpr(parts[0]);|Expression scope = new NameExpr(parts[parts.length - 1]);|verifyQualifiedCalls|Qualifies a shadowed call with the declaring type's SIMPLE name instead of building up its fully-qualified one. This is the exact bug the repair's own comment says it was written to avoid ("A call reached via a static member import has no type import for its owner, so `Util.x` does not resolve there at all"), so the verifier must catch it.
+
+RenameFieldRefactor.java|Expression scope = field.isStatic()\n                ? new NameExpr(field.declaringType().getName())\n                : new com.github.javaparser.ast.expr.ThisExpr();|Expression scope = new NameExpr(field.declaringType().getQualifiedName());|verifyRepairedReferences|Rebuilds the qualifier as a single dotted NameExpr rather than a ThisExpr / simple type name. The repair's comment records this precise mistake being made and caught: "a hand-built package-qualified FieldAccessExpr chain did not resolve at all -- caught by verifyRepairedReferences on the first repair it guarded".
+
+InlineMethodRefactor.java|return field.declaringType().getQualifiedName() + "." + field.getName();|return field.getName();|verifyRepairsBindToOriginalDeclaration|Drops the qualifier from a repaired static-field reference entirely, so the reference is re-inserted bare at the call site where it may bind to something else or to nothing. This is "making repair stop qualifying", the corruption docs/ records being applied by hand once.

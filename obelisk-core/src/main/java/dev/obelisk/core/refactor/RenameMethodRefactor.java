@@ -398,6 +398,26 @@ public final class RenameMethodRefactor {
                                                String oldName, String newName) {
         for (Map.Entry<MethodCallExpr, String> entry : repaired.entrySet()) {
             String qualifiedType = entry.getValue();
+            // FIRST, the scope the repair actually EMITTED -- not the one it
+            // was asked to emit. Everything below this checks `qualifiedType`,
+            // which is the repair's INPUT; on its own that verifies the plan
+            // and not the result, so a repair that resolved the right type and
+            // then built the wrong AST from it passed unnoticed. Found by
+            // fault injection (tools/repair-mutations.txt): making
+            // qualifyShadowedCall use the declaring type's SIMPLE name emitted
+            // `Util.report("x")` where the file has only a static member
+            // import and no type import, which does not compile -- and this
+            // check stayed silent, because the string it was handed was still
+            // the correct FQN. Two ordinary output assertions caught it
+            // instead, which is luck, not verification.
+            String emitted = entry.getKey().getScope().map(Object::toString).orElse("");
+            if (!emitted.equals(qualifiedType)) {
+                throw new RefactorException(Check.VERIFY_QUALIFIED_CALLS, "Refusing to rename '" + oldName
+                        + "' to '" + newName + "': the call at "
+                        + entry.getKey().getBegin().map(Object::toString).orElse("?") + " should have been "
+                        + "qualified with '" + qualifiedType + "', but the repair emitted '" + emitted
+                        + "'. Nothing has been written.");
+            }
             // Against the IN-MEMORY units, not ctx.typeSolver(): the solver
             // reads source from disk, which at this point still holds the
             // pre-rename text, so it would report the method missing every

@@ -190,7 +190,26 @@ Verify structurally against the in-memory AST in that case, and say so.
   checks whether any test notices. Run it after touching a check. It only
   measures *named methods* — a refusal written as an inline `throw` is
   invisible to it, and such refusals turned out to be systematically
-  untested.
+  untested. Baseline: **killed=46 subsumed=8 survived=0 unmeasurable=0**.
+- **`tools/repair-mutation-check.sh`** does the same job from the other
+  side, for the half the first script structurally cannot reach. A `verify*`
+  method fires only when a repair produced something wrong, so with the
+  repair working it is unreachable and disabling it proves nothing — it just
+  sits on the allowlist as a BACKSTOP. So instead of removing the verifier,
+  this **breaks the repair the verifier guards** and requires the verifier to
+  notice: a failing test whose stack trace names it. Going red is not enough,
+  since a broken repair can equally well emit code that will not compile.
+  Corruptions live in `tools/repair-mutations.txt`, one per repair.
+
+  It is worth knowing what its first run found, because "unverifiable"
+  had been accepted for both: **two of the three verifiers were checking
+  something other than what they claimed.** `verifyQualifiedCalls` compared
+  the qualifier it was HANDED, never the one the repair emitted — verifying
+  the plan, not the result. `verifyRepairedReferences` proved a repaired
+  reference bound to the right declaration without checking the reference
+  was *legal*, so a type-qualified reference to an instance field passed and
+  the project stopped compiling. Both are the recurring bug class, inside
+  the verification pass itself.
 - **Every check has an identity.** `Check` (in `obelisk-guard`) is an enum,
   so javac guarantees the IDs are distinct. `@Guard(Check.X)` on each
   `reject*`/`verify*` method binds one to it, and `GuardProcessor` fails the
@@ -223,6 +242,9 @@ Verify structurally against the in-memory AST in that case, and say so.
   a probe, restore from a `cp` backup taken before adding it** — never from
   git, which cannot tell your probe from your work. Check `git status`
   first; stash if anything is there.
-- `tools/mutation-check.sh` edits sources in place. It restores on
-  `EXIT INT TERM`, but never run it against a tree with uncommitted work you
-  cannot afford to re-do, and never from a second checkout concurrently.
+- `tools/mutation-check.sh` and `tools/repair-mutation-check.sh` edit
+  sources in place. Both restore on `EXIT INT TERM`, but never run either
+  against a tree with uncommitted work you cannot afford to re-do, and never
+  two at once against the same checkout. An interrupted repair-mutation run
+  is the worse of the two: it leaves a silently WRONG refactoring engine that
+  still compiles, rather than a broken build.

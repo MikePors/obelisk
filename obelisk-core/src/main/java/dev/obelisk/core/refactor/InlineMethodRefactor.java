@@ -2396,7 +2396,7 @@ public final class InlineMethodRefactor {
         if (filtered.size() > 1) {
             throw new RefactorException(Check.PARAMS_FILTER_AMBIGUOUS, "--params '" + paramsFilter + "' matches more than one overload of '"
                     + methodName + "' on '" + targetClass.getNameAsString()
-                    + "'. Use fully-qualified type names to disambiguate.");
+                    + "'. Use fully-qualified type names to say which one to inline.");
         }
         return filtered.get(0);
     }

@@ -174,7 +174,8 @@ public final class RenameFieldRefactor {
             // import originally reached the field through a subclass name.
             imp.setName(qualifiedName(ownerQualifiedName + "." + newName));
         }
-        verifyRepairedReferences(repairedReferences, ownerQualifiedName, newName, oldName);
+        verifyRepairedReferences(repairedReferences, ownerQualifiedName, newName, oldName,
+                resolvedField.isStatic());
 
         List<Path> changedFiles = new ArrayList<>();
         Map<Path, String> diffs = new LinkedHashMap<>();
@@ -424,9 +425,31 @@ public final class RenameFieldRefactor {
      */
     @Guard(Check.VERIFY_REPAIRED_REFERENCES)
     private static void verifyRepairedReferences(List<Expression> repaired, String ownerQualifiedName,
-                                                   String newName, String oldName) {
+                                                   String newName, String oldName, boolean targetIsStatic) {
         String expected = ownerQualifiedName + "." + newName;
         for (Expression reference : repaired) {
+            // Binding identity is not enough on its own: resolution answers
+            // "which declaration does this name reach", and says nothing
+            // about whether the reference is LEGAL where it sits. A
+            // type-qualified reference to an INSTANCE field resolves
+            // perfectly well to that field and javac still rejects it.
+            //
+            // Found by fault injection (tools/repair-mutations.txt): making
+            // qualifyCapturedReference build a dotted NameExpr for every
+            // field emitted `com.example.Config.count` for an instance
+            // field. It resolved, it matched `expected`, this check passed,
+            // and the project no longer compiled. The recurring bug class
+            // in CLAUDE.md, in the verification pass itself -- one property
+            // (does it bind?) standing in for the requirement (is this a
+            // legal reference to that field?).
+            FieldAccessExpr access = (FieldAccessExpr) reference;
+            boolean qualifiedByThis = access.getScope() instanceof com.github.javaparser.ast.expr.ThisExpr;
+            if (targetIsStatic == qualifiedByThis) {
+                throw new RefactorException(Check.VERIFY_REPAIRED_REFERENCES, "Refusing to rename '" + oldName
+                        + "' to '" + newName + "': the repaired reference '" + reference + "' qualifies "
+                        + (targetIsStatic ? "a STATIC field with a this-expression" : "an INSTANCE field with a type name")
+                        + ", which is not a legal way to reach it. Nothing has been written.");
+            }
             String actual;
             try {
                 ResolvedValueDeclaration resolved = ((FieldAccessExpr) reference).resolve();

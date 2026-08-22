@@ -197,8 +197,8 @@ Verify structurally against the in-memory AST in that case, and say so.
   checks whether any test notices. Run it after touching a check. It only
   measures *named methods* — a refusal written as an inline `throw` is
   invisible to it, and such refusals turned out to be systematically
-  untested. Baseline: **killed=47 subsumed=11 survived=0 unmeasurable=0**
-  of 58 targets.
+  untested. Baseline: **killed=51 subsumed=12 survived=0 unmeasurable=0**
+  of 63 targets.
 - **`tools/repair-mutation-check.sh`** does the same job from the other
   side, for the half the first script structurally cannot reach. A `verify*`
   method fires only when a repair produced something wrong, so with the
@@ -209,9 +209,17 @@ Verify structurally against the in-memory AST in that case, and say so.
   since a broken repair can equally well emit code that will not compile.
   Corruptions live in `tools/repair-mutations.txt`, one per repair.
   **Every verifier written so far has failed its first run of this**, all
-  six for the same reason: each validated the input it was HANDED rather
+  seven for the same reason: each validated the input it was HANDED rather
   than the result that was produced. If you are writing a `verify*`, assume
   you have made that mistake and go looking for it.
+
+  Treat that as a design rule, not a caution. This warning was written, and
+  then the very next verifier (#16's) was written with the same bug by the
+  same author in the same session — it compared the extracted method's
+  parameters against the PLAN, so dropping a live-in matched the shortened
+  plan exactly and passed. **A verifier must derive what it expects from
+  the RESULT, never from the data the repair handed it.** Being aware of
+  the trap demonstrably does not avoid it.
 
   It is worth knowing what its first run found, because "unverifiable"
   had been accepted for both: **two of the three verifiers were checking

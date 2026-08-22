@@ -81,6 +81,12 @@ class CheckAssertionCoverageTest {
             // resolved, so whether the rename would rebind it is unknowable.
             "SHADOWED_REFERENCE_UNRESOLVABLE",
             "SHADOWED_FIELD_REFERENCE_UNRESOLVABLE",
+            // extract-method: a name in the region that the solver
+            // cannot answer for, and a `var` live-out whose inferred type
+            // it cannot compute. Both need the solver to fail on source
+            // that parsed.
+            "REGION_NAME_UNRESOLVABLE",
+            "LIVE_OUT_TYPE_UNRESOLVABLE",
             // Its own two throw sites are both resolver failures: the target
             // class not resolving, and an ancestor with no type declaration.
             // The hazard it exists for is refused by
@@ -133,7 +139,12 @@ class CheckAssertionCoverageTest {
             // Textual rather than resolution-based -- extract-variable
             // splices source and never mutates the AST, so there is no
             // rewritten node to resolve.
-            "VERIFY_SHADOWED_FIELD_REFERENCES");
+            "VERIFY_SHADOWED_FIELD_REFERENCES",
+            // extract-method (#16). Verified by fault injection, and it is
+            // the one verifier in the codebase that can close the loop by
+            // RESOLUTION -- the extracted method and its call site share a
+            // compilation unit.
+            "VERIFY_PARAMETERS_BIND_TO_SAME_DECLARATIONS");
 
     private static final Map<String, Set<String>> EXEMPT = Map.of(
             "needs an external process or filesystem fault", ENVIRONMENT,
